@@ -17,8 +17,8 @@ const vid = m("video");
 
 export const FALLBACK_CATALOG = Object.freeze({
   shop_name: "unknown shop",
-  bot_username: "dsfklgjfsdkbot",
-  api_base_url: "https://useitai.top/api/v1",
+  bot_username: "UnknownAiShopBot",
+  api_base_url: "https://154-83-140-29.sslip.io/v1",
   subscription_days: 30,
   models: [
     t("gpt-6-astra", "GPT-6 Astra", "OpenAI", CLAUDE),
