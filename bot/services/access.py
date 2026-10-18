@@ -1,0 +1,62 @@
+"""Выдача доступа после оплаты или ручного начисления."""
+
+from html import escape
+
+from aiogram import Bot
+
+from bot import texts
+from bot.catalog import TARIFFS
+from bot.config import Settings
+from bot.db import Activation, Database
+from bot.keyboards.inline import profile_keyboard
+from bot.utils import notify_admins, safe_send
+
+
+def revoke_notice(user_id: int, key: str, reason: str) -> str:
+    return (
+        f"🔒 Деактивируйте ключ в панели провайдера ({reason}), "
+        f"пользователь <code>{user_id}</code>:\n"
+        f"<code>{escape(key)}</code>\n"
+        f"После этого: <code>/revoked {escape(key)}</code>"
+    )
+
+
+async def shown_key(
+    db: Database, settings: Settings, user_id: int, upstream_key: str | None
+) -> str | None:
+    """Ключ, который видит клиент.
+
+    С собственным эндпоинтом это наш ключ sk-us-..., ключ провайдера остаётся скрытым.
+    Пока ключ провайдера не выдан (пул пуст), показывать нечего — доступ ещё готовится.
+    """
+    if upstream_key is None:
+        return None
+    if settings.uses_gateway:
+        return await db.get_or_create_client_key(user_id)
+    return upstream_key
+
+
+async def deliver_activation(
+    bot: Bot, db: Database, settings: Settings, user_id: int, act: Activation, *, paid: bool
+) -> None:
+    tariff = TARIFFS[act.tariff]
+    key = await shown_key(db, settings, user_id, act.key)
+    await safe_send(
+        bot,
+        user_id,
+        texts.activation(tariff, act, settings, paid=paid, key=key),
+        reply_markup=profile_keyboard(
+            has_subscription=True, key=key, can_rotate=settings.uses_gateway and key is not None
+        ),
+    )
+    if act.key is None:
+        await notify_admins(
+            bot,
+            settings,
+            f"⚠️ Нет свободных ключей для тарифа <b>{tariff.title}</b>.\n"
+            f"Пользователь <code>{user_id}</code> ждёт ключ. Выдайте вручную:\n"
+            f"<code>/givekey {user_id} KEY</code>\n"
+            f"И пополните пул: <code>/addkeys {tariff.code}</code> + ключи с новой строки.",
+        )
+    if act.revoked_key:
+        await notify_admins(bot, settings, revoke_notice(user_id, act.revoked_key, "смена тарифа"))

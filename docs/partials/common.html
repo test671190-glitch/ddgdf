@@ -1,0 +1,122 @@
+<script>
+  (function () {
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+    var fine = window.matchMedia("(pointer: fine)");
+    var toastEl = document.getElementById("toast");
+    var toastTimer;
+
+    function toast(text) {
+      toastEl.textContent = text;
+      toastEl.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1600);
+    }
+
+    function copyText(text, el, label) {
+      function done() {
+        if (el) {
+          el.classList.add("done");
+          var old = el.dataset.label || el.textContent;
+          el.dataset.label = old;
+          if (label) el.textContent = label;
+          setTimeout(function () { el.classList.remove("done"); if (label) el.textContent = old; }, 1400);
+        }
+        toast("Скопировано");
+      }
+      function fallback() {
+        var target = el && el.closest(".code") ? el.closest(".code").querySelector("pre") : el;
+        if (!target) return;
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        toast("Выделено — нажмите Ctrl+C");
+      }
+      try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+    }
+    window.__copyText = copyText;
+
+    // copy buttons for code blocks and data-copy chips
+    document.querySelectorAll(".code").forEach(function (block) {
+      var head = block.querySelector(".code-head");
+      var pre = block.querySelector("pre");
+      if (!head || !pre) return;
+      var btn = document.createElement("button");
+      btn.className = "copy";
+      btn.type = "button";
+      btn.textContent = "Копировать";
+      btn.addEventListener("click", function () { copyText(pre.textContent, btn, "Скопировано"); });
+      head.appendChild(btn);
+    });
+    document.querySelectorAll("[data-copy]").forEach(function (btn) {
+      btn.addEventListener("click", function () { copyText(btn.dataset.copy, btn, "Скопировано"); });
+    });
+
+    // segmented control (quick start) — only on pages that have one
+    var seg = document.querySelector(".segmented");
+    if (seg) initSegmented(seg);
+    function initSegmented(seg) {
+    var thumb = seg.querySelector(".thumb");
+    var tabs = Array.prototype.slice.call(seg.querySelectorAll("button"));
+    function placeThumb(tab) {
+      thumb.style.width = tab.offsetWidth + "px";
+      thumb.style.transform = "translateX(" + (tab.offsetLeft - 4) + "px)";
+    }
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          t.setAttribute("aria-selected", on ? "true" : "false");
+          document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+        });
+        placeThumb(tab);
+      });
+    });
+    placeThumb(tabs[0]);
+    window.addEventListener("resize", function () { placeThumb(seg.querySelector('[aria-selected="true"]')); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { placeThumb(seg.querySelector('[aria-selected="true"]')); });
+    }
+
+    // specular highlight follows the pointer on glass
+    if (fine.matches) {
+      document.addEventListener("pointermove", function (e) {
+        var g = e.target.closest && e.target.closest(".glass");
+        if (!g) return;
+        var r = g.getBoundingClientRect();
+        g.style.setProperty("--mx", (e.clientX - r.left) + "px");
+        g.style.setProperty("--my", (e.clientY - r.top) + "px");
+      }, { passive: true });
+    }
+
+    // 3D tilt on plan cards
+    if (fine.matches && !reduce.matches) {
+      document.querySelectorAll(".tilt").forEach(function (card) {
+        card.addEventListener("pointermove", function (e) {
+          var r = card.getBoundingClientRect();
+          var x = (e.clientX - r.left) / r.width - 0.5;
+          var y = (e.clientY - r.top) / r.height - 0.5;
+          card.style.transform = "rotateX(" + (-y * 8).toFixed(2) + "deg) rotateY(" + (x * 10).toFixed(2) + "deg) translateZ(0)";
+        });
+        card.addEventListener("pointerleave", function () { card.style.transform = ""; });
+      });
+    }
+
+    // active section in the index
+    var links = {};
+    document.querySelectorAll(".toc a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+    if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          Object.keys(links).forEach(function (id) { links[id].classList.toggle("active", id === entry.target.id); });
+          var active = links[entry.target.id];
+          if (active && window.matchMedia("(max-width: 960px)").matches) {
+            active.scrollIntoView({ block: "nearest", inline: "center", behavior: reduce.matches ? "auto" : "smooth" });
+          }
+        });
+      }, { rootMargin: "-25% 0px -65% 0px" });
+      document.querySelectorAll("main section").forEach(function (s) { io.observe(s); });
+    }
+  })();
+</script>

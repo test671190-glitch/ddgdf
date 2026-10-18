@@ -1,0 +1,1623 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{color-scheme:dark}body{margin:0}[hidden]{display:none!important}</style>
+<title>unknown shop API</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Документация API unknown shop: подключение, эндпоинты, 49 моделей, ошибки и лимиты.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Unbounded:wght@500;700;800&display=swap">
+<style>
+  /* Layout: fixed 3D glass scene behind everything; a floating glass header, a sticky glass index
+     and a column of glass sheets that blur and tint whatever drifts behind them. */
+  /* Deliberately dark-only: one night-glass look regardless of the viewer's theme. */
+  :root {
+    --bg: #06070a;
+    --bg-deep: #0b0d12;
+    --ink: #eef0f5;
+    --muted: #a2a9b7;
+    --line: rgba(255, 255, 255, 0.1);
+    --glass: rgba(22, 25, 34, 0.5);
+    --glass-strong: rgba(30, 33, 44, 0.72);
+    --glass-edge: rgba(255, 255, 255, 0.26);
+    --glass-rim: rgba(0, 0, 0, 0.35);
+    --glass-lift: 0 30px 70px -30px rgba(0, 0, 0, 0.85), 0 2px 10px rgba(0, 0, 0, 0.35);
+    --spec: rgba(255, 255, 255, 0.14);
+    --signal: #ff8b4d;
+    --signal-soft: rgba(255, 139, 77, 0.14);
+    --cool: #47cfe0;
+    --cool-soft: rgba(71, 207, 224, 0.13);
+    --ok: #5fd39a;
+    --ok-soft: rgba(95, 211, 154, 0.13);
+    --gold: #f4c04e;
+    --gold-soft: rgba(244, 192, 78, 0.14);
+    --code-bg: rgba(5, 6, 9, 0.72);
+    --code-fg: #e8eaf0;
+    --code-dim: #7f8796;
+    --glow-a: #ff6a2b;
+    --glow-b: #1fb8cc;
+    --glow-c: #f2b632;
+    --font-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+    --font-body: "Golos Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    --radius: 24px;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: calc(110px + env(safe-area-inset-top, 0px)); }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 16px/1.65 var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: var(--signal); text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 8px; }
+  ::selection { background: var(--signal-soft); }
+
+  /* ---------- background: CSS glow + WebGL glass scene ---------- */
+  .backdrop { position: fixed; inset: 0; z-index: -2; pointer-events: none; overflow: hidden; background: var(--bg); }
+  .backdrop i { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.55; }
+  .backdrop i:nth-child(1) { width: 52vmax; height: 52vmax; left: -12vmax; top: -18vmax; background: var(--glow-a); animation: drift 26s ease-in-out infinite alternate; }
+  .backdrop i:nth-child(2) { width: 46vmax; height: 46vmax; right: -14vmax; top: 18vh; background: var(--glow-b); animation: drift 32s ease-in-out infinite alternate-reverse; }
+  .backdrop i:nth-child(3) { width: 30vmax; height: 30vmax; left: 30vw; bottom: -14vmax; background: var(--glow-c); opacity: 0.4; animation: drift 38s ease-in-out infinite alternate; }
+  @keyframes drift { to { transform: translate3d(6vmax, 5vmax, 0) scale(1.08); } }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+  .grain { position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.05; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+  /* ---------- liquid glass material ---------- */
+  .glass {
+    position: relative;
+    isolation: isolate;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(26px) saturate(185%) brightness(1.04);
+    backdrop-filter: blur(26px) saturate(185%) brightness(1.04);
+    border-radius: var(--radius);
+    box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 -1px 0 var(--glass-rim), var(--glass-lift);
+  }
+  /* light-catching rim: a gradient border that is brighter at the top-left and bottom-right */
+  .glass::before {
+    content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: linear-gradient(140deg, var(--glass-edge), transparent 32%, transparent 68%, var(--glass-edge));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  /* specular highlight that follows the pointer */
+  .glass::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+    background: radial-gradient(520px circle at var(--mx, 18%) var(--my, -10%), var(--spec), transparent 46%);
+    transition: opacity 0.4s ease;
+  }
+  @supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+    .glass { background: var(--glass-strong); }
+  }
+
+  /* ---------- header ---------- */
+  .topbar {
+    position: sticky; top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 20;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .topbar .bar {
+    max-width: 1200px; margin: 0 auto; border-radius: 999px;
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    padding: 9px 10px 9px 20px;
+  }
+  .wordmark { font: 800 17px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 6px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+  .redact { background: var(--ink); color: var(--bg); padding: 4px 7px 5px; border-radius: 3px; }
+  .wordmark small { font: 600 11px/1 var(--font-mono); color: var(--muted); margin-left: 6px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .topnav { display: flex; gap: 2px; }
+  .topnav a { color: var(--muted); text-decoration: none; font-size: 14px; padding: 8px 12px; border-radius: 999px; transition: background 0.2s, color 0.2s; }
+  .topnav a:hover { color: var(--ink); background: var(--glass-strong); }
+  .pill-btn {
+    display: inline-flex; align-items: center; gap: 8px; border: 0; cursor: pointer;
+    font: 600 14px/1 var(--font-body); padding: 11px 16px; border-radius: 999px; text-decoration: none; white-space: nowrap;
+    color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--signal) 82%, #fff), var(--signal));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 10px 24px -10px var(--signal);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .pill-btn:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 18px 36px -12px var(--signal); }
+  .pill-btn.ghost { color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 6px 18px -12px rgba(0, 0, 0, 0.4); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    max-width: 1200px; margin: 0 auto;
+    padding-block: clamp(56px, 10vh, 120px) 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid; gap: 22px; justify-items: start;
+  }
+  .eyebrow { display: inline-flex; align-items: center; gap: 10px; font: 600 12px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); padding: 9px 14px; border-radius: 999px; }
+  .eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px var(--ok-soft); }
+  .hero h1 { font: 800 clamp(40px, 8.2vw, 104px)/0.95 var(--font-display); letter-spacing: -0.045em; margin: 0; max-width: 11ch; text-wrap: balance; }
+  .hero h1 .redact { padding: 0 0.12em 0.04em; border-radius: 0.08em; }
+  .hero h1 .api { background: linear-gradient(120deg, var(--signal), var(--gold) 55%, var(--cool)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 56ch; margin: 0; }
+  .hero-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .base-url { display: inline-flex; align-items: center; gap: 12px; padding: 8px 8px 8px 18px; border-radius: 999px; max-width: 100%; }
+  .base-url span { font: 600 11px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+  .base-url code { font: 500 14px/1.2 var(--font-mono); color: var(--ink); overflow-wrap: anywhere; }
+  .chip-btn { font: 600 12px/1 var(--font-body); border: 0; cursor: pointer; padding: 9px 12px; border-radius: 999px; color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge); }
+  .chip-btn.done { color: var(--ok); }
+  .stats { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+  .stat { padding: 16px 20px; border-radius: 20px; min-width: 128px; display: grid; gap: 4px; }
+  .stat b { font: 800 34px/1 var(--font-display); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .stat span { font: 600 11px/1.2 var(--font-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .stat.t b { color: var(--signal); } .stat.i b { color: var(--cool); } .stat.v b { color: var(--gold); }
+  @media (prefers-reduced-motion: no-preference) {
+    .hero > * { animation: enter 0.9s cubic-bezier(.2, .8, .2, 1) both; }
+    .hero > *:nth-child(2) { animation-delay: 0.08s; } .hero > *:nth-child(3) { animation-delay: 0.16s; }
+    .hero > *:nth-child(4) { animation-delay: 0.24s; } .hero > *:nth-child(5) { animation-delay: 0.32s; }
+  }
+  /* transform only: the text stays readable at every moment, even if the animation is paused */
+  @keyframes enter { from { transform: translateY(18px); } }
+
+  /* ---------- shell ---------- */
+  .shell {
+    max-width: 1200px; margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 24px 80px;
+    display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 28px; align-items: start;
+  }
+  nav.toc { position: sticky; top: calc(96px + env(safe-area-inset-top, 0px)); padding: 16px 12px; max-height: calc(100vh - 120px); overflow-y: auto; scrollbar-width: none; }
+  nav.toc::-webkit-scrollbar { display: none; }
+  .toc-group { display: grid; gap: 2px; margin-bottom: 14px; }
+  .toc-group:last-child { margin-bottom: 0; }
+  .toc-label { font: 600 10.5px/1 var(--font-mono); text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); padding: 6px 12px 8px; }
+  .toc a { position: relative; display: block; padding: 7px 12px; border-radius: 12px; color: var(--muted); text-decoration: none; font-size: 14px; line-height: 1.3; transition: color 0.2s, background 0.25s; }
+  .toc a:hover { color: var(--ink); }
+  .toc a.active { color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 6px 16px -10px rgba(0, 0, 0, 0.35); }
+  .toc a.active::before { content: ""; position: absolute; left: 4px; top: 50%; width: 3px; height: 14px; margin-top: -7px; border-radius: 3px; background: var(--signal); }
+
+  main { min-width: 0; display: grid; gap: 22px; }
+  .sheet { padding: clamp(22px, 3.4vw, 40px); min-width: 0; }
+  .prose { max-width: 70ch; }
+  h2 { font: 700 clamp(22px, 2.6vw, 30px)/1.15 var(--font-display); letter-spacing: -0.025em; margin: 0 0 14px; text-wrap: balance; }
+  h3 { font: 600 17px/1.3 var(--font-body); margin: 26px 0 10px; }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  .kicker { font: 600 11px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--signal); margin-bottom: 10px; display: block; }
+  :not(pre) > code { font: 500 0.86em/1 var(--font-mono); background: var(--glass-strong); padding: 3px 6px; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line); overflow-wrap: anywhere; }
+
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      .sheet { animation: rise linear both; animation-timeline: view(); animation-range: entry 0% entry 38%; }
+    }
+  }
+  @keyframes rise { from { transform: translateY(46px) scale(0.975); opacity: 0.3; } }
+
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 6px 0 16px; padding: 0; list-style: none; counter-reset: s; }
+  .steps li { counter-increment: s; margin: 0; padding: 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 10px 26px -18px rgba(0, 0, 0, 0.45); display: grid; gap: 8px; align-content: start; }
+  .steps li::before { content: counter(s); font: 800 22px/1 var(--font-display); color: var(--signal); }
+
+  .endpoint { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 16px; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge); font: 500 15px/1.3 var(--font-mono); }
+  .method { font: 700 11.5px/1 var(--font-mono); letter-spacing: 0.06em; padding: 7px 10px; border-radius: 999px; }
+  .method.post { background: var(--signal-soft); color: var(--signal); }
+  .method.get { background: var(--ok-soft); color: var(--ok); }
+
+  .code {
+    position: relative; margin: 0 0 18px; border-radius: 18px; min-width: 0;
+    background: var(--code-bg); color: var(--code-fg);
+    -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 48px -28px rgba(0, 0, 0, 0.65);
+  }
+  .code-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 10px 0 18px; font: 500 12px/1 var(--font-mono); color: var(--code-dim); letter-spacing: 0.04em; }
+  .code-head .lights { display: inline-flex; gap: 6px; margin-right: 10px; }
+  .code-head .lights i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255, 255, 255, 0.14); }
+  .code-head .lights i:nth-child(1) { background: #ff5f57; } .code-head .lights i:nth-child(2) { background: #febc2e; } .code-head .lights i:nth-child(3) { background: #28c840; }
+  .code pre { margin: 0; padding: 14px 18px 18px; overflow-x: auto; font: 400 13.5px/1.65 var(--font-mono); tab-size: 2; }
+  .copy { font: 600 12px/1 var(--font-body); color: var(--code-dim); background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; padding: 7px 11px; cursor: pointer; transition: color 0.2s, border-color 0.2s; }
+  .copy:hover { color: var(--code-fg); border-color: rgba(255, 255, 255, 0.3); }
+  .copy.done { color: #5fd39a; border-color: currentColor; }
+
+  /* iOS-style segmented control */
+  .segmented { position: relative; display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 4px; border-radius: 999px; margin-bottom: 14px; background: var(--glass-strong); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 0 0 1px var(--line); max-width: 100%; }
+  .segmented .thumb { position: absolute; top: 4px; bottom: 4px; left: 4px; border-radius: 999px; background: var(--bg); box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.45), inset 0 1px 0 var(--glass-edge); transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1), width 0.3s ease; }
+  .segmented button { position: relative; z-index: 1; border: 0; background: none; cursor: pointer; font: 600 13px/1 var(--font-mono); color: var(--muted); padding: 10px 18px; border-radius: 999px; transition: color 0.25s; }
+  .segmented button[aria-selected="true"], .segmented button[aria-pressed="true"] { color: var(--ink); }
+
+  .table-wrap { overflow-x: auto; margin: 0 0 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 0 0 1px var(--line); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr { transition: background 0.2s; }
+  tbody tr:hover { background: var(--signal-soft); }
+  th { font: 600 10.5px/1.2 var(--font-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); white-space: nowrap; }
+  td code { white-space: nowrap; }
+  .req { font: 700 9.5px/1 var(--font-mono); color: var(--signal); text-transform: uppercase; letter-spacing: 0.1em; display: block; margin-top: 5px; }
+  .num { font: 600 13.5px var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  .note { padding: 16px 18px; border-radius: 18px; margin: 0 0 18px; font-size: 15px; background: var(--signal-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--signal) 25%, transparent); }
+  .note strong { color: var(--signal); }
+
+  details.tool { border-radius: 18px; margin-bottom: 10px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 0 0 1px var(--line); overflow: hidden; }
+  details.tool summary { cursor: pointer; padding: 15px 18px; font-weight: 600; display: flex; align-items: center; gap: 12px; list-style: none; }
+  details.tool summary::-webkit-details-marker { display: none; }
+  details.tool summary .proto { margin-left: auto; font: 600 11px/1 var(--font-mono); letter-spacing: 0.06em; color: var(--muted); padding: 6px 9px; border-radius: 999px; background: var(--glass); }
+  details.tool summary::after { content: ""; width: 9px; height: 9px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg) translateY(-2px); transition: transform 0.3s ease; }
+  details.tool[open] summary::after { transform: rotate(225deg) translateY(-2px); }
+  details.tool .body { padding: 0 18px 8px; min-width: 0; }
+
+  /* model orbit */
+  .orbit-card { position: relative; margin: 6px 0 18px; border-radius: 22px; overflow: hidden; background: radial-gradient(120% 90% at 50% 40%, var(--glass-strong), transparent 70%); box-shadow: inset 0 0 0 1px var(--line); }
+  #orbit { display: block; width: 100%; height: 380px; cursor: grab; touch-action: pan-y; }
+  .orbit-tip { position: absolute; pointer-events: none; padding: 10px 12px; border-radius: 14px; font-size: 13px; line-height: 1.35; transform: translate(-50%, calc(-100% - 14px)); white-space: nowrap; }
+  .orbit-tip b { display: block; font-weight: 600; }
+  .orbit-tip code { font: 500 12px var(--font-mono); color: var(--muted); }
+  .orbit-hint { position: absolute; left: 16px; bottom: 12px; font: 500 12px/1.3 var(--font-mono); color: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .legend .chip { display: inline-flex; align-items: center; gap: 8px; font: 600 13px/1 var(--font-body); padding: 9px 13px; border-radius: 999px; border: 0; cursor: pointer; color: var(--muted); background: var(--glass-strong); box-shadow: inset 0 0 0 1px var(--line); transition: color 0.2s, box-shadow 0.2s; }
+  .legend .chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .legend .chip[data-filter="text"] i { background: var(--signal); }
+  .legend .chip[data-filter="image"] i { background: var(--cool); }
+  .legend .chip[data-filter="video"] i { background: var(--gold); }
+  .legend .chip[aria-pressed="true"] { color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); }
+  .search { flex: 1 1 220px; min-width: 0; font: 400 14px/1 var(--font-body); padding: 11px 16px; border-radius: 999px; border: 0; color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08), inset 0 0 0 1px var(--line); }
+  .id-btn { font: 500 13px/1.2 var(--font-mono); color: var(--ink); background: transparent; border: 0; border-radius: 6px; padding: 3px 5px; margin-left: -5px; cursor: copy; white-space: nowrap; }
+  .id-btn:hover { background: var(--glass); }
+  .id-btn.done { color: var(--ok); }
+  .lvl { font: 400 12.5px/1.8 var(--font-mono); color: var(--muted); }
+  .lvl b { color: var(--ink); font-weight: 600; }
+  .type-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+  .empty-row td { color: var(--muted); text-align: center; }
+
+  .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin: 4px 0 20px; perspective: 1200px; }
+  .plan { --acc: var(--signal); --acc-soft: var(--signal-soft); padding: 24px; border-radius: 22px; display: grid; gap: 12px; align-content: start; transition: transform 0.35s cubic-bezier(.2, .8, .2, 1); will-change: transform; }
+  .plan.gold { --acc: var(--gold); --acc-soft: var(--gold-soft); }
+  .plan h3 { margin: 0; font: 800 22px/1.1 var(--font-display); display: flex; align-items: center; gap: 12px; }
+  .plan-ico {
+    width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 13px;
+    color: #fff;
+    background: radial-gradient(120% 120% at 30% 15%, color-mix(in srgb, var(--acc) 55%, #fff) 0%, var(--acc) 45%, color-mix(in srgb, var(--acc) 55%, #000) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), inset 0 -2px 6px rgba(0, 0, 0, 0.25), 0 10px 24px -10px var(--acc);
+  }
+  .plan-ico svg { width: 20px; height: 20px; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25)); }
+  .plan .badge { font: 700 10px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; padding: 6px 8px; border-radius: 999px; color: var(--acc); background: var(--acc-soft); }
+  .plan .price { font: 800 40px/1 var(--font-display); letter-spacing: -0.03em; }
+  .plan .price small { font: 500 14px var(--font-body); color: var(--muted); letter-spacing: 0; }
+  .plan ul { margin: 4px 0 0; padding-left: 0; list-style: none; display: grid; gap: 10px; }
+  .plan li { margin: 0; padding-left: 32px; position: relative; }
+  .plan li::before { content: ""; position: absolute; left: 0; top: 0.15em; width: 20px; height: 20px; border-radius: 50%; background: var(--acc-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--acc) 35%, transparent); }
+  .plan li::after {
+    content: ""; position: absolute; left: 5px; top: calc(0.15em + 5px); width: 10px; height: 10px; background: var(--acc);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.3 4 7.6 8.6 2.4' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.3 4 7.6 8.6 2.4' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  .plan.featured { box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 0 0 1.5px color-mix(in srgb, var(--acc) 55%, transparent), 0 30px 60px -28px var(--acc); }
+
+  footer { padding-block: 0 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  footer .inner { max-width: 1200px; margin: 0 auto; padding: 18px 24px; border-radius: 999px; color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+
+  .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translate(-50%, 140%); padding: 12px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1); }
+  .toast.show { transform: translate(-50%, 0); }
+
+  /* Springy hover: controls swell under the pointer and press in on click, like iOS glass buttons. */
+  .pill-btn, .chip-btn, .copy, .legend .chip, .id-btn, .topnav a, .segmented button, .wordmark {
+    transition: transform 0.45s cubic-bezier(.34, 1.56, .64, 1), box-shadow 0.3s ease, background 0.2s ease, color 0.2s ease;
+    will-change: transform;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .pill-btn:hover { transform: scale(1.08); }
+    .chip-btn:hover, .copy:hover { transform: scale(1.1); }
+    .legend .chip:hover, .topnav a:hover, .segmented button:hover { transform: scale(1.07); }
+    .id-btn:hover { transform: scale(1.05); }
+    .wordmark:hover { transform: scale(1.04); }
+    .legend .chip:hover { box-shadow: inset 0 0 0 1px var(--line), 0 10px 22px -12px rgba(0, 0, 0, 0.7); }
+    .chip-btn:hover { box-shadow: inset 0 1px 0 var(--glass-edge), 0 8px 18px -10px rgba(0, 0, 0, 0.7); }
+  }
+  .pill-btn:active, .chip-btn:active, .copy:active, .legend .chip:active, .id-btn:active, .topnav a:active, .segmented button:active {
+    transform: scale(0.95);
+    transition-duration: 0.12s;
+  }
+
+  /* page tabs in the header */
+  .topnav { padding: 3px; border-radius: 999px; background: rgba(0, 0, 0, 0.18); box-shadow: inset 0 0 0 1px var(--line); }
+  .topnav a { font-weight: 600; padding: 8px 16px; }
+  .topnav a[aria-current="page"] { color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 6px 16px -10px rgba(0, 0, 0, 0.6); }
+
+  /* single-column pages (home) */
+  .shell.single { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
+  .section-head { display: grid; gap: 6px; margin-bottom: 18px; }
+  .section-head h2 { margin: 0; }
+  .section-head p { margin: 0; color: var(--muted); max-width: 60ch; }
+  .plan .buy { justify-self: start; margin-top: 8px; }
+  .plan.gold .buy { color: #1b1404; background: linear-gradient(180deg, color-mix(in srgb, var(--gold) 75%, #fff), var(--gold)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 10px 24px -10px var(--gold); }
+  .pay-note { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 14px; }
+  .pay-note span::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 8px; vertical-align: 2px; }
+  details.faq summary { font-weight: 600; justify-content: space-between; }
+  details.faq summary::after { flex: none; margin-left: 12px; }
+  details.faq .body p { color: var(--muted); }
+  .cta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+  .cta h2 { margin: 0; }
+
+  @media (max-width: 960px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 16px; padding-block: 8px 56px; }
+    nav.toc { top: calc(76px + env(safe-area-inset-top, 0px)); z-index: 15; max-height: none; display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden; padding: 6px; border-radius: 999px; }
+    .toc-group { display: contents; }
+    .toc-label { display: none; }
+    .toc a { white-space: nowrap; border-radius: 999px; }
+    .toc a.active::before { display: none; }
+    html { scroll-padding-top: calc(140px + env(safe-area-inset-top, 0px)); }
+  }
+  @media (max-width: 560px) {
+    .topbar .bar { padding-left: 16px; }
+    .topbar .pill-btn { display: none; }
+    .topbar .bar { padding-right: 6px; }
+    .wordmark { font-size: 15px; }
+    .topnav a { padding: 8px 12px; font-size: 13px; }
+    .stat { min-width: 0; flex: 1 1 90px; padding: 14px; }
+    #orbit { height: 300px; }
+    .glass { -webkit-backdrop-filter: blur(18px) saturate(170%); backdrop-filter: blur(18px) saturate(170%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .backdrop i { animation: none; }
+    * { transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="backdrop" aria-hidden="true"><i></i><i></i><i></i></div>
+<canvas id="scene" aria-hidden="true"></canvas>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="bar glass">
+    <a class="wordmark" href="./"><span class="redact">unknown</span> shop</a>
+    <nav class="topnav" aria-label="Страницы">
+      <a href="./">Главное</a>
+      <a href="api.html" aria-current="page">API</a>
+    </nav>
+    <a class="pill-btn" href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">↗ <span>Telegram-бот</span></a>
+  </div>
+</header>
+
+<section class="hero" id="overview">
+  <div class="eyebrow glass"><span class="dot"></span>API v1 · OpenAI + Anthropic</div>
+  <h1><span class="redact">unknown</span> shop <span class="api">API</span></h1>
+  <p class="lead">Один ключ открывает 49 моделей для текста, изображений и видео. Совместим с OpenAI и Anthropic SDK, поэтому подключается к Cursor, Claude Code, Cline и вашим скриптам за минуту.</p>
+  <div class="hero-row">
+    <div class="base-url glass"><span>Base URL</span><code id="base-url">https://154-83-140-29.sslip.io/v1</code><button class="chip-btn" type="button" data-copy="https://154-83-140-29.sslip.io/v1">Копировать</button></div>
+    <a class="pill-btn ghost" href="#quickstart">Быстрый старт →</a>
+  </div>
+  <div class="stats" aria-label="Количество моделей">
+    <div class="stat glass t"><b>32</b><span>текстовые</span></div>
+    <div class="stat glass i"><b>8</b><span>изображения</span></div>
+    <div class="stat glass v"><b>9</b><span>видео</span></div>
+  </div>
+</section>
+
+<div class="shell">
+  <nav class="toc glass" aria-label="Разделы">
+    <div class="toc-group">
+      <div class="toc-label">Начало</div>
+      <a href="#key">Как получить ключ</a>
+      <a href="#auth">Аутентификация</a>
+      <a href="#quickstart">Быстрый старт</a>
+      <a href="#ide">Подключение к IDE</a>
+    </div>
+    <div class="toc-group">
+      <div class="toc-label">Эндпоинты</div>
+      <a href="#chat">Chat Completions</a>
+      <a href="#streaming">Стриминг</a>
+      <a href="#messages">Anthropic Messages</a>
+      <a href="#models">Модели</a>
+      <a href="#images">Изображения</a>
+      <a href="#videos">Видео</a>
+    </div>
+    <div class="toc-group">
+      <div class="toc-label">Справка</div>
+      <a href="#errors">Ошибки</a>
+      <a href="#limits">Лимиты и тарифы</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="sheet glass" id="key">
+      <span class="kicker">Шаг 0</span>
+      <h2>Как получить ключ</h2>
+      <ol class="steps">
+        <li>Откройте Telegram-бот <a href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">unknown shop</a> и выберите тариф Pro или Unlimited.</li>
+        <li>Оплатите в Telegram Stars или криптой через @CryptoBot. Ключ придёт сразу после оплаты.</li>
+        <li>Ключ, тариф и срок действия всегда под рукой в боте по команде <code>/profile</code>.</li>
+      </ol>
+      <p class="prose">Если ключ попал в чужие руки, откройте в боте «Профиль» → «Перевыпустить ключ»: старый ключ сразу перестанет работать, а вы получите новый.</p>
+    </section>
+
+    <section class="sheet glass" id="auth">
+      <span class="kicker">Безопасность</span>
+      <h2>Аутентификация</h2>
+      <p class="prose">Передавайте ключ в заголовке <code>Authorization</code>. Для Anthropic SDK подойдёт и заголовок <code>x-api-key</code>.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>http</span></div>
+        <pre>Authorization: Bearer YOUR_API_KEY</pre>
+      </div>
+      <p class="note"><strong>Держите ключ в секрете.</strong> Храните его в переменной окружения и не вставляйте в код, который уходит в браузер или в публичный репозиторий.</p>
+    </section>
+
+    <section class="sheet glass" id="quickstart">
+      <span class="kicker">60 секунд</span>
+      <h2>Быстрый старт</h2>
+      <p class="prose">Подойдёт любой OpenAI SDK, достаточно указать другой base URL. В примерах ключ берётся из переменной <code>UNKNOWN_SHOP_API_KEY</code>.</p>
+      <div class="segmented" role="tablist" aria-label="Язык примера">
+        <span class="thumb" aria-hidden="true"></span>
+        <button role="tab" id="tab-curl" aria-controls="panel-curl" aria-selected="true">curl</button>
+        <button role="tab" id="tab-py" aria-controls="panel-py" aria-selected="false">Python</button>
+        <button role="tab" id="tab-js" aria-controls="panel-js" aria-selected="false">JavaScript</button>
+      </div>
+      <div class="code" role="tabpanel" id="panel-curl" aria-labelledby="tab-curl">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/chat/completions \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-6-astra",
+    "messages": [
+      {"role": "user", "content": "Объясни, что такое REST, в двух предложениях"}
+    ]
+  }'</pre>
+      </div>
+      <div class="code" role="tabpanel" id="panel-py" aria-labelledby="tab-py" hidden>
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>python · pip install openai</span></div>
+        <pre>import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://154-83-140-29.sslip.io/v1",
+    api_key=os.environ["UNKNOWN_SHOP_API_KEY"],
+)
+
+response = client.chat.completions.create(
+    model="gpt-6-astra",
+    messages=[{"role": "user", "content": "Объясни, что такое REST, в двух предложениях"}],
+)
+print(response.choices[0].message.content)</pre>
+      </div>
+      <div class="code" role="tabpanel" id="panel-js" aria-labelledby="tab-js" hidden>
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>javascript · npm install openai</span></div>
+        <pre>import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://154-83-140-29.sslip.io/v1",
+  apiKey: process.env.UNKNOWN_SHOP_API_KEY,
+});
+
+const response = await client.chat.completions.create({
+  model: "gpt-6-astra",
+  messages: [{ role: "user", content: "Объясни, что такое REST, в двух предложениях" }],
+});
+console.log(response.choices[0].message.content);</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="ide">
+      <span class="kicker">Интеграции</span>
+      <h2>Подключение к IDE</h2>
+      <p class="prose">Любой инструмент, который работает с OpenAI- или Anthropic-провайдером, подключается тремя значениями: base URL, ключ и ID модели. Для кода хорошо подходят <code>claude-opus-5-5</code>, <code>claude-fable-5-1</code>, <code>gpt-6-astra</code>, <code>gpt-5.6-sol</code> и <code>gemini-3.8-flash</code>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Инструмент</th><th>Протокол</th><th>Base URL</th></tr></thead>
+          <tbody>
+            <tr><td>Claude Code</td><td>Anthropic</td><td><code>https://154-83-140-29.sslip.io</code></td></tr>
+            <tr><td>Cursor</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Cline, Roo Code, Kilo Code</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Antigravity</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Codex CLI</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Continue, Zed, JetBrains</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>OpenCode, Aider</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note"><strong>Протокол Anthropic</strong> использует base URL без <code>/v1</code>. Все остальные инструменты используют адрес с <code>/v1</code>.</p>
+
+      <details class="tool" open>
+        <summary>Claude Code <span class="proto">ANTHROPIC</span></summary>
+        <div class="body">
+          <p>Задайте переменные окружения и запустите <code>claude</code>. Если раньше вы входили через аккаунт Anthropic, сначала выполните <code>/logout</code>, иначе запросы пойдут мимо ключа.</p>
+          <div class="code">
+            <div class="code-head"><span>macOS / Linux</span></div>
+            <pre>export ANTHROPIC_BASE_URL="https://154-83-140-29.sslip.io"
+export ANTHROPIC_AUTH_TOKEN="YOUR_API_KEY"
+export ANTHROPIC_MODEL="claude-opus-5-5"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="claude-opus-5-5"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-5.5"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="claude-haiku-5.5"
+claude</pre>
+          </div>
+          <div class="code">
+            <div class="code-head"><span>Windows PowerShell</span></div>
+            <pre>$env:ANTHROPIC_BASE_URL = "https://154-83-140-29.sslip.io"
+$env:ANTHROPIC_AUTH_TOKEN = "YOUR_API_KEY"
+$env:ANTHROPIC_MODEL = "claude-opus-5-5"
+claude</pre>
+          </div>
+          <p>Чтобы не задавать переменные каждый раз, добавьте их в <code>~/.claude/settings.json</code>. Эти настройки подхватывают и расширения Claude Code для VS Code и JetBrains.</p>
+          <div class="code">
+            <div class="code-head"><span>~/.claude/settings.json</span></div>
+            <pre>{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://154-83-140-29.sslip.io",
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_API_KEY",
+    "ANTHROPIC_MODEL": "claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5.5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5.5"
+  }
+}</pre>
+          </div>
+          <p>Команда <code>/status</code> покажет текущий base URL, <code>/model</code> переключит модель. Вместо Claude можно указать любую текстовую модель, например <code>gpt-6-astra</code>.</p>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Cursor <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <ol>
+            <li>Откройте Cursor Settings → Models (<code>Ctrl+Shift+J</code>, на macOS <code>Cmd+Shift+J</code>).</li>
+            <li>В блоке API Keys вставьте ключ в поле OpenAI API Key.</li>
+            <li>Включите Override OpenAI Base URL и укажите <code>https://154-83-140-29.sslip.io/v1</code>.</li>
+            <li>Нажмите Add Custom Model и введите ID модели, например <code>claude-opus-5-5</code>.</li>
+            <li>Выберите модель в чате или в режиме Agent.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Cline, Roo Code, Kilo Code <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <ol>
+            <li>Откройте настройки расширения (шестерёнка в его панели).</li>
+            <li>API Provider: <code>OpenAI Compatible</code>.</li>
+            <li>Base URL: <code>https://154-83-140-29.sslip.io/v1</code>, API Key: ваш ключ.</li>
+            <li>Model ID: <code>claude-opus-5-5</code> или любая другая модель.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Antigravity <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Antigravity построен на VS Code, поэтому подключение идёт через расширение.</p>
+          <ol>
+            <li>Установите Kilo Code или Cline из панели Extensions.</li>
+            <li>В настройках расширения выберите провайдера <code>OpenAI Compatible</code>.</li>
+            <li>Укажите base URL <code>https://154-83-140-29.sslip.io/v1</code>, ключ и ID модели.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Codex CLI <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Добавьте провайдера в <code>~/.codex/config.toml</code>, а ключ передайте через переменную окружения.</p>
+          <div class="code">
+            <div class="code-head"><span>~/.codex/config.toml</span></div>
+            <pre>model = "gpt-6-astra"
+model_provider = "unknownshop"
+
+[model_providers.unknownshop]
+name = "unknown shop"
+base_url = "https://154-83-140-29.sslip.io/v1"
+env_key = "UNKNOWN_SHOP_API_KEY"
+wire_api = "chat"</pre>
+          </div>
+          <div class="code">
+            <div class="code-head"><span>bash</span></div>
+            <pre>export UNKNOWN_SHOP_API_KEY="YOUR_API_KEY"
+codex</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Continue <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Расширение для VS Code и JetBrains. Модели описываются в <code>~/.continue/config.yaml</code>.</p>
+          <div class="code">
+            <div class="code-head"><span>~/.continue/config.yaml</span></div>
+            <pre>name: unknown shop
+version: 1.0.0
+schema: v1
+models:
+  - name: Claude Opus 5.5
+    provider: openai
+    model: claude-opus-5-5
+    apiBase: https://154-83-140-29.sslip.io/v1
+    apiKey: YOUR_API_KEY
+    roles: [chat, edit, apply]
+  - name: GPT-6 Astra
+    provider: openai
+    model: gpt-6-astra
+    apiBase: https://154-83-140-29.sslip.io/v1
+    apiKey: YOUR_API_KEY
+    roles: [chat, edit, apply]</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Zed <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Добавьте провайдера в <code>settings.json</code> Zed, а ключ введите в панели Agent → Settings.</p>
+          <div class="code">
+            <div class="code-head"><span>settings.json</span></div>
+            <pre>{
+  "language_models": {
+    "openai_compatible": {
+      "unknown shop": {
+        "api_url": "https://154-83-140-29.sslip.io/v1",
+        "available_models": [
+          { "name": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "max_tokens": 1000000 },
+          { "name": "gpt-6-astra", "display_name": "GPT-6 Astra", "max_tokens": 1000000 }
+        ]
+      }
+    }
+  }
+}</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>JetBrains AI Assistant <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <ol>
+            <li>Откройте Settings → Tools → AI Assistant → Models.</li>
+            <li>В блоке Third-party AI providers выберите <code>OpenAI-compatible</code>.</li>
+            <li>URL: <code>https://154-83-140-29.sslip.io/v1</code>, API Key: ваш ключ, затем Test Connection.</li>
+            <li>Выберите нужную модель в списке моделей чата.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>OpenCode <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Добавьте провайдера в <code>opencode.json</code> и выберите модель командой <code>/models</code>.</p>
+          <div class="code">
+            <div class="code-head"><span>opencode.json</span></div>
+            <pre>{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "unknownshop": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "unknown shop",
+      "options": {
+        "baseURL": "https://154-83-140-29.sslip.io/v1",
+        "apiKey": "{env:UNKNOWN_SHOP_API_KEY}"
+      },
+      "models": {
+        "claude-opus-5-5": { "name": "Claude Opus 5.5" },
+        "gpt-6-astra": { "name": "GPT-6 Astra" }
+      }
+    }
+  }
+}</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Aider <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <div class="code">
+            <div class="code-head"><span>bash</span></div>
+            <pre>aider --openai-api-base https://154-83-140-29.sslip.io/v1 \
+      --openai-api-key YOUR_API_KEY \
+      --model openai/claude-opus-5-5</pre>
+          </div>
+        </div>
+      </details>
+
+      <h3>Другие программы</h3>
+      <p class="prose">Если в настройках есть пункт OpenAI Compatible, Custom provider или поле Base URL, укажите <code>https://154-83-140-29.sslip.io/v1</code>, ключ и ID модели. Программам на протоколе Anthropic нужен адрес без <code>/v1</code>: <code>https://154-83-140-29.sslip.io</code>.</p>
+    </section>
+
+    <section class="sheet glass" id="chat">
+      <span class="kicker">Текст</span>
+      <h2>Chat Completions</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/chat/completions</span></div>
+      <p class="prose">Диалог с текстовой моделью. Запрос и ответ устроены так же, как в OpenAI.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Параметр</th><th>Тип</th><th>Описание</th></tr></thead>
+          <tbody>
+            <tr><td><code>model</code><span class="req">обязательный</span></td><td>string</td><td>ID модели, например <code>gpt-6-astra</code>. Все ID есть в разделе <a href="#models">Модели</a>.</td></tr>
+            <tr><td><code>messages</code><span class="req">обязательный</span></td><td>array</td><td>Сообщения диалога в виде <code>{ role, content }</code>. Роли: <code>system</code>, <code>user</code>, <code>assistant</code>.</td></tr>
+            <tr><td><code>stream</code></td><td>boolean</td><td>Отдавать ответ по частям через SSE. По умолчанию <code>false</code>.</td></tr>
+            <tr><td><code>reasoning_effort</code></td><td>string</td><td>Глубина рассуждения: <code>none</code>, <code>minimal</code>, <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>. Доступные значения зависят от модели, они указаны в таблице <a href="#models">моделей</a>.</td></tr>
+            <tr><td><code>verbosity</code></td><td>string</td><td>Длина ответа: <code>low</code>, <code>medium</code>, <code>high</code>. Только для моделей OpenAI.</td></tr>
+            <tr><td><code>web_search</code></td><td>boolean</td><td>Перед ответом модель ищет информацию в интернете. Работает у всех текстовых моделей.</td></tr>
+            <tr><td><code>temperature</code></td><td>number</td><td>Учитывается только у моделей GPT с <code>reasoning_effort: none</code>. Claude и Gemini его игнорируют.</td></tr>
+            <tr><td><code>max_tokens</code></td><td>integer</td><td>Предел длины ответа в токенах: до 128 000 у GPT и Claude, до 65 536 у Gemini.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>Ответ · 200</span></div>
+        <pre>{
+  "id": "chatcmpl-8f2c1a",
+  "object": "chat.completion",
+  "created": 1790000000,
+  "model": "gpt-6-astra",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "…" },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": { "prompt_tokens": 18, "completion_tokens": 42, "total_tokens": 60 }
+}</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="streaming">
+      <span class="kicker">SSE</span>
+      <h2>Стриминг</h2>
+      <p class="prose">С параметром <code>"stream": true</code> ответ приходит частями в формате Server-Sent Events. Каждая часть содержит фрагмент текста в <code>delta.content</code>. Поток заканчивается строкой <code>data: [DONE]</code>.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/chat/completions \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -N -d '{"model": "gpt-5.6-sol", "stream": true, "messages": [{"role": "user", "content": "Привет"}]}'</pre>
+      </div>
+      <div class="code">
+        <div class="code-head"><span>text/event-stream</span></div>
+        <pre>data: {"choices":[{"index":0,"delta":{"content":"Прив"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"ет!"}}]}
+
+data: [DONE]</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="messages">
+      <span class="kicker">Anthropic SDK</span>
+      <h2>Anthropic Messages</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/messages</span></div>
+      <p class="prose">Эндпоинт в формате Anthropic Messages API. Через него работают Claude Code и Anthropic SDK. Ключ можно передать в <code>x-api-key</code>.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/messages \
+  -H "x-api-key: $UNKNOWN_SHOP_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-opus-5-5",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Привет!"}]
+  }'</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="models">
+      <span class="kicker">Каталог · 49</span>
+      <h2>Модели</h2>
+      <div class="endpoint"><span class="method get">GET</span><span>/v1/models</span></div>
+      <p class="prose">Возвращает список доступных моделей. В параметре <code>model</code> передавайте значение из колонки ID. Наведите на точку на карте, чтобы увидеть модель, нажмите, чтобы скопировать её ID.</p>
+      <div class="orbit-card">
+        <canvas id="orbit" aria-label="Карта моделей: три орбиты — текст, изображения, видео"></canvas>
+        <div class="orbit-tip glass" id="orbit-tip" hidden></div>
+        <div class="orbit-hint">тяните, чтобы вращать · нажмите точку, чтобы скопировать ID</div>
+      </div>
+      <div class="legend">
+        <button class="chip" type="button" data-filter="all" aria-pressed="true"><i></i>Все</button>
+        <button class="chip" type="button" data-filter="text" aria-pressed="false"><i></i>Текст</button>
+        <button class="chip" type="button" data-filter="image" aria-pressed="false"><i></i>Изображения</button>
+        <button class="chip" type="button" data-filter="video" aria-pressed="false"><i></i>Видео</button>
+        <label for="model-search" hidden>Поиск модели</label>
+        <input class="search" id="model-search" type="search" placeholder="Найти: claude, kling, gemini…" autocomplete="off">
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Модель</th><th>Разработчик</th><th>reasoning_effort</th></tr></thead>
+          <tbody id="models-body"></tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/models \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY"</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="images">
+      <span class="kicker">Генерация</span>
+      <h2>Изображения</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/images/generations</span></div>
+      <p class="prose">Генерирует изображение и возвращает ссылку на готовый файл.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Параметр</th><th>Тип</th><th>Описание</th></tr></thead>
+          <tbody>
+            <tr><td><code>model</code><span class="req">обязательный</span></td><td>string</td><td>ID модели изображений, например <code>nano-banana-pro</code>.</td></tr>
+            <tr><td><code>prompt</code><span class="req">обязательный</span></td><td>string</td><td>Описание изображения.</td></tr>
+            <tr><td><code>aspect_ratio</code></td><td>string</td><td><code>auto</code>, <code>1:1</code>, <code>4:5</code>, <code>9:16</code>, <code>16:9</code>, <code>21:9</code> и другие. Набор зависит от модели.</td></tr>
+            <tr><td><code>resolution</code></td><td>string</td><td><code>0.5K</code>, <code>1K</code>, <code>2K</code>, <code>4K</code>. У FLUX.2 разрешение задаётся в мегапикселях: от <code>0.5MP</code> до <code>4MP</code>.</td></tr>
+            <tr><td><code>quality</code></td><td>string</td><td><code>auto</code>, <code>low</code>, <code>medium</code>, <code>high</code>. Только GPT Image и Grok Imagine.</td></tr>
+            <tr><td><code>n</code></td><td>integer</td><td>Сколько изображений сгенерировать, от 1 до 4.</td></tr>
+            <tr><td><code>images</code></td><td>array</td><td>Референсы или исходные картинки для правки: до 16 у GPT Image, до 14 у Nano Banana, до 5 у Grok.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/images/generations \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nano-banana-pro",
+    "prompt": "Минималистичная обложка альбома, чёрно-белая плёнка",
+    "aspect_ratio": "1:1",
+    "resolution": "4K",
+    "n": 2
+  }'</pre>
+      </div>
+      <div class="code">
+        <div class="code-head"><span>Ответ · 200</span></div>
+        <pre>{
+  "created": 1790000000,
+  "data": [{ "url": "https://…/img_7hc2.png" }]
+}</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="videos">
+      <span class="kicker">Генерация</span>
+      <h2>Видео</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/videos</span></div>
+      <p class="prose">Видео генерируется асинхронно. Запрос сразу возвращает ID задачи, а статус и ссылку на готовый ролик вы получаете отдельным запросом.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Параметр</th><th>Тип</th><th>Описание</th></tr></thead>
+          <tbody>
+            <tr><td><code>model</code><span class="req">обязательный</span></td><td>string</td><td>ID видеомодели, например <code>kling-3.0</code>.</td></tr>
+            <tr><td><code>prompt</code><span class="req">обязательный</span></td><td>string</td><td>Описание сцены.</td></tr>
+            <tr><td><code>aspect_ratio</code></td><td>string</td><td><code>16:9</code>, <code>9:16</code>, <code>1:1</code> и другие. Набор зависит от модели.</td></tr>
+            <tr><td><code>duration</code></td><td>integer</td><td>Длительность в секундах: Seedance 2.5 от 4 до 30, Kling 3.0 от 3 до 15, Veo 3.1 только 4, 6 или 8.</td></tr>
+            <tr><td><code>resolution</code></td><td>string</td><td><code>360p</code>, <code>480p</code>, <code>720p</code>, <code>1080p</code>, <code>4K</code>. Набор зависит от модели.</td></tr>
+            <tr><td><code>generate_audio</code></td><td>boolean</td><td>Добавить звук. У Veo 3.1 и Gemini Omni звук генерируется всегда.</td></tr>
+            <tr><td><code>images</code></td><td>array</td><td>Первый и последний кадр или референсы. Для Motion Control нужны фото персонажа и видео с движением.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/videos \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kling-3.0",
+    "prompt": "Утренний город, медленный пролёт камеры над крышами",
+    "aspect_ratio": "16:9",
+    "duration": 10,
+    "resolution": "1080p"
+  }'</pre>
+      </div>
+      <h3>Статус задачи</h3>
+      <div class="endpoint"><span class="method get">GET</span><span>/v1/videos/{id}</span></div>
+      <p class="prose">Опрашивайте задачу раз в несколько секунд, пока статус не станет <code>completed</code> или <code>failed</code>. Возможные статусы: <code>queued</code>, <code>processing</code>, <code>completed</code>, <code>failed</code>.</p>
+      <div class="code">
+        <div class="code-head"><span>Ответ · 200</span></div>
+        <pre>{
+  "id": "vid_4f9a",
+  "status": "completed",
+  "url": "https://…/vid_4f9a.mp4"
+}</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="errors">
+      <span class="kicker">Справка</span>
+      <h2>Ошибки</h2>
+      <p class="prose">Ошибка возвращается с HTTP-кодом и телом в формате OpenAI. Ориентируйтесь на поле <code>code</code>: оно не меняется, а текст <code>message</code> может уточняться.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>Ответ · 404</span></div>
+        <pre>{
+  "error": {
+    "message": "Модель не найдена",
+    "type": "invalid_request_error",
+    "code": "model_not_found"
+  }
+}</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>HTTP</th><th>code</th><th>Что произошло и что делать</th></tr></thead>
+          <tbody>
+            <tr><td class="num">400</td><td><code>invalid_request</code></td><td>Неверные параметры запроса. Проверьте имена и значения полей.</td></tr>
+            <tr><td class="num">401</td><td><code>invalid_api_key</code></td><td>Ключ не передан или недействителен. Проверьте заголовок и ключ в <code>/profile</code>.</td></tr>
+            <tr><td class="num">402</td><td><code>subscription_required</code></td><td>Нет активного тарифа. Продлите подписку в боте.</td></tr>
+            <tr><td class="num">404</td><td><code>model_not_found</code></td><td>Модели с таким ID нет. Сверьтесь с разделом <a href="#models">Модели</a>.</td></tr>
+            <tr><td class="num">429</td><td><code>plan_limit_reached</code></td><td>Дневной лимит тарифа исчерпан. Доступ вернётся после сброса, время сброса есть в заголовке <code>X-Plan-Reset</code>.</td></tr>
+            <tr><td class="num">500</td><td><code>server_error</code></td><td>Внутренняя ошибка. Повторите запрос через несколько секунд.</td></tr>
+            <tr><td class="num">502</td><td><code>upstream_error</code></td><td>Сервис моделей временно не отвечает. Повторите запрос.</td></tr>
+            <tr><td class="num">503</td><td><code>key_pending</code></td><td>Подписка оплачена, доступ ещё готовится. Бот пришлёт уведомление, когда всё будет готово.</td></tr>
+            <tr><td class="num">503</td><td><code>provider_key_error</code></td><td>Временная проблема на нашей стороне, мы уже получили уведомление. Если ошибка не пропадает, напишите в поддержку.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="limits">
+      <span class="kicker">Тарифы</span>
+      <h2>Лимиты и тарифы</h2>
+      <p class="prose">Отдельного ограничения на число запросов в минуту нет. Объём работы зависит только от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
+      <div class="plans">
+        <div class="plan glass tilt featured">
+          <h3><span class="plan-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.6 2.2 5 13.1c-.3.4 0 1 .5 1h5.3l-1.5 7.4c-.1.6.6.9 1 .4l8.6-10.9c.3-.4 0-1-.5-1h-5.3l1.5-7.4c.1-.6-.6-.9-1-.4Z"/></svg></span>Pro <span class="badge">Популярный</span></h3>
+          <div class="price">$33 <small>/ 30 дней</small></div>
+          <ul>
+          <li>Безлимит на генерацию изображений</li>
+          <li>Безлимит на текстовые модели 15 часов в день</li>
+          <li>Безлимит на видео 10 часов в день</li>
+          <li>Доступ к API</li>
+          </ul>
+          <a class="pill-btn buy" href="https://t.me/UnknownAiShopBot?start=buy_pro" target="_blank" rel="noopener">Купить Pro в боте ↗</a>
+        </div>
+        <div class="plan glass tilt gold">
+          <h3><span class="plan-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.2 8.3c-.2-.7.6-1.2 1.2-.8l3.9 2.9 2.9-5c.4-.6 1.2-.6 1.6 0l2.9 5 3.9-2.9c.6-.4 1.4.1 1.2.8l-1.9 8.6c-.1.4-.5.7-.9.7H6c-.4 0-.8-.3-.9-.7L3.2 8.3Z"/><rect x="5.5" y="19" width="13" height="2.2" rx="1.1"/></svg></span>Unlimited</h3>
+          <div class="price">$80 <small>/ 30 дней</small></div>
+          <ul>
+          <li>Полный безлимит на все модели</li>
+          <li>Текст, изображения и видео круглосуточно</li>
+          <li>Безлимитный доступ к API</li>
+          </ul>
+          <a class="pill-btn buy" href="https://t.me/UnknownAiShopBot?start=buy_unlimited" target="_blank" rel="noopener">Купить Unlimited в боте ↗</a>
+        </div>
+      </div>
+      <p class="prose">Остаток по тарифу приходит в заголовках каждого ответа:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Заголовок</th><th>Значение</th></tr></thead>
+          <tbody>
+            <tr><td><code>X-Plan-Limit</code></td><td>Дневной лимит тарифа.</td></tr>
+            <tr><td><code>X-Plan-Remaining</code></td><td>Сколько осталось до сброса.</td></tr>
+            <tr><td><code>X-Plan-Reset</code></td><td>Когда лимит обновится.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="prose">Когда дневной лимит заканчивается, API отвечает кодом <code>429</code> с <code>code: plan_limit_reached</code>.</p>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="inner glass">
+    <span><b>unknown shop</b> API</span>
+    <span>Тариф, ключ и поддержка — в <a href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">Telegram-боте</a></span>
+  </div>
+</footer>
+
+<div class="toast glass" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+  (function () {
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+    var fine = window.matchMedia("(pointer: fine)");
+    var toastEl = document.getElementById("toast");
+    var toastTimer;
+
+    function toast(text) {
+      toastEl.textContent = text;
+      toastEl.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1600);
+    }
+
+    function copyText(text, el, label) {
+      function done() {
+        if (el) {
+          el.classList.add("done");
+          var old = el.dataset.label || el.textContent;
+          el.dataset.label = old;
+          if (label) el.textContent = label;
+          setTimeout(function () { el.classList.remove("done"); if (label) el.textContent = old; }, 1400);
+        }
+        toast("Скопировано");
+      }
+      function fallback() {
+        var target = el && el.closest(".code") ? el.closest(".code").querySelector("pre") : el;
+        if (!target) return;
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        toast("Выделено — нажмите Ctrl+C");
+      }
+      try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+    }
+    window.__copyText = copyText;
+
+    // copy buttons for code blocks and data-copy chips
+    document.querySelectorAll(".code").forEach(function (block) {
+      var head = block.querySelector(".code-head");
+      var pre = block.querySelector("pre");
+      if (!head || !pre) return;
+      var btn = document.createElement("button");
+      btn.className = "copy";
+      btn.type = "button";
+      btn.textContent = "Копировать";
+      btn.addEventListener("click", function () { copyText(pre.textContent, btn, "Скопировано"); });
+      head.appendChild(btn);
+    });
+    document.querySelectorAll("[data-copy]").forEach(function (btn) {
+      btn.addEventListener("click", function () { copyText(btn.dataset.copy, btn, "Скопировано"); });
+    });
+
+    // segmented control (quick start) — only on pages that have one
+    var seg = document.querySelector(".segmented");
+    if (seg) initSegmented(seg);
+    function initSegmented(seg) {
+    var thumb = seg.querySelector(".thumb");
+    var tabs = Array.prototype.slice.call(seg.querySelectorAll("button"));
+    function placeThumb(tab) {
+      thumb.style.width = tab.offsetWidth + "px";
+      thumb.style.transform = "translateX(" + (tab.offsetLeft - 4) + "px)";
+    }
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          t.setAttribute("aria-selected", on ? "true" : "false");
+          document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+        });
+        placeThumb(tab);
+      });
+    });
+    placeThumb(tabs[0]);
+    window.addEventListener("resize", function () { placeThumb(seg.querySelector('[aria-selected="true"]')); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { placeThumb(seg.querySelector('[aria-selected="true"]')); });
+    }
+
+    // specular highlight follows the pointer on glass
+    if (fine.matches) {
+      document.addEventListener("pointermove", function (e) {
+        var g = e.target.closest && e.target.closest(".glass");
+        if (!g) return;
+        var r = g.getBoundingClientRect();
+        g.style.setProperty("--mx", (e.clientX - r.left) + "px");
+        g.style.setProperty("--my", (e.clientY - r.top) + "px");
+      }, { passive: true });
+    }
+
+    // 3D tilt on plan cards
+    if (fine.matches && !reduce.matches) {
+      document.querySelectorAll(".tilt").forEach(function (card) {
+        card.addEventListener("pointermove", function (e) {
+          var r = card.getBoundingClientRect();
+          var x = (e.clientX - r.left) / r.width - 0.5;
+          var y = (e.clientY - r.top) / r.height - 0.5;
+          card.style.transform = "rotateX(" + (-y * 8).toFixed(2) + "deg) rotateY(" + (x * 10).toFixed(2) + "deg) translateZ(0)";
+        });
+        card.addEventListener("pointerleave", function () { card.style.transform = ""; });
+      });
+    }
+
+    // active section in the index
+    var links = {};
+    document.querySelectorAll(".toc a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+    if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          Object.keys(links).forEach(function (id) { links[id].classList.toggle("active", id === entry.target.id); });
+          var active = links[entry.target.id];
+          if (active && window.matchMedia("(max-width: 960px)").matches) {
+            active.scrollIntoView({ block: "nearest", inline: "center", behavior: reduce.matches ? "auto" : "smooth" });
+          }
+        });
+      }, { rootMargin: "-25% 0px -65% 0px" });
+      document.querySelectorAll("main section").forEach(function (s) { io.observe(s); });
+    }
+  })();
+</script>
+
+<script>
+  // Model catalog: table + pseudo-3D orbit map (2D canvas, three tilted rings)
+  (function () {
+    var A = "none low medium high xhigh max";
+    var B = "low medium high xhigh max";
+    var C = "low medium high";
+    var D = "minimal low medium high";
+    // [id, name, type, vendor, reasoning levels, default]
+    var MODELS = [
+      ["gpt-6-astra", "GPT-6 Astra", "text", "OpenAI", B, "medium"],
+      ["gpt-6-sol", "GPT-6 Sol", "text", "OpenAI", A, "medium"],
+      ["gpt-6-luna", "GPT-6 Luna", "text", "OpenAI", A, "medium"],
+      ["gpt-6-astra-pro", "GPT-6 Astra Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-6-sol-pro", "GPT-6 Sol Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-6-luna-pro", "GPT-6 Luna Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-6.1-sol", "GPT-6.1 Sol", "text", "OpenAI", A, "medium"],
+      ["gpt-6.1-sol-pro", "GPT-6.1 Sol Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-5.6-sol", "GPT-5.6 Sol", "text", "OpenAI", A, "medium"],
+      ["gpt-5.6-terra", "GPT-5.6 Terra", "text", "OpenAI", A, "medium"],
+      ["gpt-5.6-luna", "GPT-5.6 Luna", "text", "OpenAI", A, "medium"],
+      ["claude-opus-5-5", "Claude Opus 5.5", "text", "Anthropic", B, "medium"],
+      ["claude-fable-5-1", "Claude Fable 5.1", "text", "Anthropic", B, "high"],
+      ["claude-sonnet-5.5", "Claude Sonnet 5.5", "text", "Anthropic", B, "medium"],
+      ["claude-haiku-5.5", "Claude Haiku 5.5", "text", "Anthropic", B, "medium"],
+      ["claude-opus-5", "Claude Opus 5", "text", "Anthropic", A, "high"],
+      ["claude-fable-5", "Claude Fable 5", "text", "Anthropic", B, "high"],
+      ["claude-opus-4-8", "Claude Opus 4.8", "text", "Anthropic", A, "none"],
+      ["gemini-4-argon", "Gemini 4 Argon", "text", "Google", C, "medium"],
+      ["gemini-3.8-flash", "Gemini 3.8 Flash", "text", "Google", C, "medium"],
+      ["gemini-3.7-flash", "Gemini 3.7 Flash", "text", "Google", C, "medium"],
+      ["gemini-3.6-flash", "Gemini 3.6 Flash", "text", "Google", D, "medium"],
+      ["gemini-3.1-pro-preview", "Gemini 3.1 Pro", "text", "Google", C, "high"],
+      ["grok-4.7", "Grok 4.7", "text", "xAI", C, "medium"],
+      ["qwen3.8-max-prime", "Qwen3.8 Max Prime", "text", "Qwen", C, "medium"],
+      ["qwen3.8-max-0902", "Qwen3.8 Max (0902)", "text", "Qwen", C, "medium"],
+      ["qwen3.8-omni-flash", "Qwen3.8 Omni Flash", "text", "Qwen", C, "medium"],
+      ["glm-5.3-prime", "GLM 5.3 Prime", "text", "Z.ai", C, "medium"],
+      ["glm-5.3-flashx", "GLM 5.3 FlashX", "text", "Z.ai", C, "medium"],
+      ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", "text", "DeepSeek", C, "medium"],
+      ["deepseek-v4.1-flash-1017", "DeepSeek V4.1 Flash 1017", "text", "DeepSeek", C, "medium"],
+      ["mistral-large-4-0", "Mistral Large 4", "text", "Mistral", C, "medium"],
+      ["nano-banana-pro", "Nano Banana Pro", "image", "Google"],
+      ["nano-banana-2", "Nano Banana 2", "image", "Google"],
+      ["gpt-image-2.5", "GPT Image 2.5", "image", "OpenAI"],
+      ["gpt-image-2", "GPT Image 2", "image", "OpenAI"],
+      ["grok-imagine-image-2.0", "Grok Imagine Image 2.0", "image", "xAI"],
+      ["seedream-5.0-pro", "Seedream 5.0 Pro", "image", "ByteDance"],
+      ["recraft-v4.1", "Recraft V4.1", "image", "Recraft"],
+      ["flux-2", "FLUX.2", "image", "Black Forest Labs"],
+      ["seedance-2.5", "Seedance 2.5", "video", "ByteDance"],
+      ["seedance-2.0", "Seedance 2.0", "video", "ByteDance"],
+      ["veo-3.1", "Veo 3.1", "video", "Google"],
+      ["gemini-omni-flash-1.1", "Gemini Omni Flash 1.1", "video", "Google"],
+      ["pixverse-v6", "PixVerse V6", "video", "PixVerse"],
+      ["kling-3.0", "Kling 3.0", "video", "Kuaishou"],
+      ["kling-2.6", "Kling 2.6", "video", "Kuaishou"],
+      ["kling-3.0-motion-control", "Kling 3.0 Motion Control", "video", "Kuaishou"],
+      ["kling-2.6-motion-control", "Kling 2.6 Motion Control", "video", "Kuaishou"]
+    ];
+    var TYPE_LABEL = { image: "изображения", video: "видео" };
+    var TYPE_VAR = { text: "--signal", image: "--cool", video: "--gold" };
+    var copyText = window.__copyText;
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    // ---------- table ----------
+    var body = document.getElementById("models-body");
+    var search = document.getElementById("model-search");
+    var chips = Array.prototype.slice.call(document.querySelectorAll(".legend .chip"));
+    var filter = "all";
+
+    function levels(m) {
+      if (m[2] !== "text") return '<span class="lvl">' + TYPE_LABEL[m[2]] + "</span>";
+      return '<span class="lvl">' + m[4].split(" ").map(function (l) { return l === m[5] ? "<b>" + l + "</b>" : l; }).join(" ") + "</span>";
+    }
+    function render() {
+      var q = (search.value || "").trim().toLowerCase();
+      var rows = MODELS.filter(function (m) {
+        if (filter !== "all" && m[2] !== filter) return false;
+        return !q || (m[0] + " " + m[1] + " " + m[3]).toLowerCase().indexOf(q) !== -1;
+      });
+      if (!rows.length) {
+        body.innerHTML = '<tr class="empty-row"><td colspan="4">Ничего не найдено. Попробуйте другое название или сбросьте фильтр.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map(function (m) {
+        return '<tr><td><span class="type-dot" style="background:var(' + TYPE_VAR[m[2]] + ')"></span><button class="id-btn" type="button" title="Скопировать ID" data-id="' + m[0] + '">' + m[0] +
+          "</button></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
+      }).join("");
+    }
+    body.addEventListener("click", function (e) {
+      var btn = e.target.closest(".id-btn");
+      if (btn) copyText(btn.dataset.id, btn);
+    });
+    search.addEventListener("input", render);
+    function setFilter(f) {
+      filter = f;
+      chips.forEach(function (c) { c.setAttribute("aria-pressed", c.dataset.filter === f ? "true" : "false"); });
+      render();
+    }
+    chips.forEach(function (chip) { chip.addEventListener("click", function () { setFilter(chip.dataset.filter); }); });
+    render();
+
+    // ---------- orbit map ----------
+    var canvas = document.getElementById("orbit");
+    var tip = document.getElementById("orbit-tip");
+    var ctx = canvas.getContext("2d");
+    var RINGS = { text: 1, image: 0.64, video: 0.38 };
+    var SPEED = { text: 0.05, image: -0.08, video: 0.12 };
+    var points = MODELS.map(function (m) {
+      var same = MODELS.filter(function (x) { return x[2] === m[2]; });
+      return { m: m, ring: m[2], base: (same.indexOf(m) / same.length) * Math.PI * 2 };
+    });
+    var colors = {};
+    var W = 0, H = 0, dpr = 1, t = 0, spin = 0, tilt = 0.32, drag = null, hovered = null, visible = true, last = 0;
+
+    function readColors() {
+      var cs = getComputedStyle(document.documentElement);
+      colors.text = cs.getPropertyValue("--signal").trim();
+      colors.image = cs.getPropertyValue("--cool").trim();
+      colors.video = cs.getPropertyValue("--gold").trim();
+      colors.ink = cs.getPropertyValue("--ink").trim();
+      colors.muted = cs.getPropertyValue("--muted").trim();
+      colors.line = cs.getPropertyValue("--line").trim();
+    }
+    // Pre-rendered soft dots: drawing a cached sprite is far cheaper than canvas shadowBlur per dot,
+    // which is what made the animation stutter.
+    var sprites = {};
+    function makeSprites() {
+      ["text", "image", "video"].forEach(function (ring) {
+        var c = document.createElement("canvas");
+        c.width = c.height = 64;
+        var g = c.getContext("2d");
+        var grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+        grad.addColorStop(0, "#ffffff");
+        grad.addColorStop(0.18, colors[ring]);
+        grad.addColorStop(0.32, colors[ring]);
+        grad.addColorStop(0.42, "rgba(0,0,0,0)");
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 64, 64);
+        var halo = g.createRadialGradient(32, 32, 8, 32, 32, 32);
+        halo.addColorStop(0, colors[ring]);
+        halo.addColorStop(1, "rgba(0,0,0,0)");
+        g.globalAlpha = 0.35;
+        g.fillStyle = halo;
+        g.fillRect(0, 0, 64, 64);
+        sprites[ring] = c;
+      });
+    }
+    function resize() {
+      // layout size, not getBoundingClientRect: the section may be mid scroll-animation (scaled)
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function ringTiltOf(ring) {
+      return Math.max(0.05, tilt + (ring === "image" ? 0.08 : ring === "video" ? -0.06 : 0));
+    }
+    function project(p) {
+      var R = Math.min(W * 0.44, H * 1.05) * RINGS[p.ring];
+      var a = p.base + spin + t * SPEED[p.ring];
+      var x = Math.cos(a) * R, z = Math.sin(a) * R;
+      var y = z * ringTiltOf(p.ring);
+      var depth = (Math.sin(a) + 1) / 2; // 0 = back, 1 = front
+      return { x: W / 2 + x, y: H / 2 + y, depth: depth };
+    }
+    function drawRing(ring) {
+      var R = Math.min(W * 0.44, H * 1.05) * RINGS[ring];
+      ctx.beginPath();
+      ctx.ellipse(W / 2, H / 2, R, Math.max(1, R * ringTiltOf(ring)), 0, 0, Math.PI * 2);
+      ctx.strokeStyle = colors[ring];
+      ctx.globalAlpha = filter === "all" || filter === ring ? 0.35 : 0.08;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      // core
+      var g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, 70);
+      g.addColorStop(0, colors.text);
+      g.addColorStop(1, "transparent");
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(W / 2, H / 2, 70, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ["text", "image", "video"].forEach(drawRing);
+      var projected = points.map(function (p) { var q = project(p); q.p = p; return q; });
+      projected.sort(function (a, b) { return a.depth - b.depth; });
+      projected.forEach(function (q) {
+        var on = filter === "all" || filter === q.p.ring;
+        var r = (3 + q.depth * 4.5) * (q.p === hovered ? 1.7 : 1);
+        var size = r * 6; // sprite core is ~1/3 of its width
+        ctx.globalAlpha = on ? 0.35 + q.depth * 0.65 : 0.08;
+        ctx.drawImage(sprites[q.p.ring], q.x - size / 2, q.y - size / 2, size, size);
+        q.p.sx = q.x; q.p.sy = q.y; q.p.r = r; q.p.on = on;
+      });
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = colors.ink;
+      ctx.font = "800 30px Unbounded, Golos Text, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(filter === "all" ? MODELS.length : MODELS.filter(function (m) { return m[2] === filter; }).length), W / 2, H / 2 - 4);
+      ctx.font = "600 10px JetBrains Mono, monospace";
+      ctx.fillStyle = colors.muted;
+      ctx.fillText(filter === "all" ? "МОДЕЛЕЙ" : { text: "ТЕКСТ", image: "КАРТИНКИ", video: "ВИДЕО" }[filter], W / 2, H / 2 + 20);
+    }
+    function frame(now) {
+      if (!visible || document.hidden) { last = 0; requestAnimationFrame(frame); return; }
+      var dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
+      last = now;
+      if (!reduce.matches && !drag) t += dt;
+      draw();
+      requestAnimationFrame(frame);
+    }
+    function pick(e) {
+      var r = canvas.getBoundingClientRect();
+      // convert screen px to layout px (the section can be scaled by its scroll animation)
+      var x = (e.clientX - r.left) * (W / r.width), y = (e.clientY - r.top) * (H / r.height), best = null, bestD = 16;
+      points.forEach(function (p) {
+        if (!p.on || p.sx == null) return;
+        var d = Math.hypot(p.sx - x, p.sy - y);
+        if (d < bestD) { bestD = d; best = p; }
+      });
+      return best;
+    }
+    canvas.addEventListener("pointermove", function (e) {
+      if (drag) {
+        spin += (e.clientX - drag.x) * 0.006;
+        tilt = Math.max(0.08, Math.min(0.62, tilt + (e.clientY - drag.y) * 0.002));
+        drag = { x: e.clientX, y: e.clientY, moved: true };
+        if (reduce.matches) draw();
+        return;
+      }
+      hovered = pick(e);
+      if (hovered) {
+        tip.hidden = false;
+        tip.innerHTML = "<b>" + hovered.m[1] + "</b><code>" + hovered.m[0] + "</code>";
+        tip.style.left = hovered.sx + "px";
+        tip.style.top = hovered.sy + "px";
+        canvas.style.cursor = "copy";
+      } else {
+        tip.hidden = true;
+        canvas.style.cursor = "grab";
+      }
+      if (reduce.matches) draw();
+    });
+    canvas.addEventListener("pointerleave", function () { hovered = null; tip.hidden = true; drag = null; });
+    canvas.addEventListener("pointercancel", function () { drag = null; });
+    canvas.addEventListener("pointerdown", function (e) { drag = { x: e.clientX, y: e.clientY, moved: false }; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener("pointerup", function (e) {
+      var wasDrag = drag && drag.moved;
+      drag = null;
+      if (wasDrag) return;
+      var p = pick(e);
+      if (p) copyText(p.m[0], null);
+    });
+
+    readColors();
+    makeSprites();
+    resize();
+    draw();
+    window.addEventListener("resize", function () { resize(); draw(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw);
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) { visible = entries[0].isIntersecting; }).observe(canvas);
+    }
+    requestAnimationFrame(frame);
+  })();
+</script>
+
+<script type="importmap">
+  { "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  } }
+</script>
+<script type="module">
+  // Background scene: an opaque, slowly flowing colour field (a shader on a plane fixed to the
+  // camera) with refracting glass shapes in front of it. The colour field is opaque on purpose:
+  // three.js transmission only refracts opaque geometry, so the glass now bends real colour.
+  import * as THREE from "three";
+  import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+  const canvas = document.getElementById("scene");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  const lite = matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+  const BG_DISTANCE = 40;
+
+  function init() {
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: !lite, alpha: false, powerPreference: "high-performance" });
+    } catch (e) {
+      canvas.remove();
+      return;
+    }
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, lite ? 1 : 1.25));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    if ("transmissionResolutionScale" in renderer) renderer.transmissionResolutionScale = lite ? 0.35 : 0.5;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+    camera.position.set(0, 0, 16);
+    scene.add(camera);
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    // ---- flowing colour field ----
+    const cs = getComputedStyle(document.documentElement);
+    const css = (name, fallback) => new THREE.Color(cs.getPropertyValue(name).trim() || fallback);
+    const bgUniforms = {
+      uTime: { value: 0 },
+      uScroll: { value: 0 },
+      uAspect: { value: 1 },
+      uBase: { value: css("--bg", "#06070a") },
+      uA: { value: css("--glow-a", "#ff6a2b") },
+      uB: { value: css("--glow-b", "#1fb8cc") },
+      uC: { value: css("--glow-c", "#f2b632") },
+    };
+    const bg = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.ShaderMaterial({
+        uniforms: bgUniforms,
+        depthWrite: false,
+        vertexShader: /* glsl */ `
+          varying vec2 vUv;
+          void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+        `,
+        fragmentShader: /* glsl */ `
+          uniform float uTime, uScroll, uAspect;
+          uniform vec3 uBase, uA, uB, uC;
+          varying vec2 vUv;
+          float blob(vec2 p, vec2 c, float r) { vec2 d = p - c; return exp(-dot(d, d) / (r * r)); }
+          void main() {
+            vec2 p = vec2(vUv.x * uAspect, vUv.y);
+            float t = uTime;
+            float s = uScroll;
+            vec2 a = vec2(uAspect * (0.12 + 0.06 * sin(t * 0.13)), 0.86 + 0.05 * cos(t * 0.11) - s * 0.55);
+            vec2 b = vec2(uAspect * (0.88 + 0.05 * cos(t * 0.09)), 0.42 + 0.07 * sin(t * 0.12) + s * 0.25);
+            vec2 c = vec2(uAspect * (0.45 + 0.08 * sin(t * 0.07 + 1.3)), -0.05 + 0.06 * cos(t * 0.1) + s * 0.9);
+            vec3 col = uBase;
+            col += uA * blob(p, a, 0.36) * 0.5;
+            col += uB * blob(p, b, 0.4) * 0.45;
+            col += uC * blob(p, c, 0.3) * 0.32;
+            // fine film grain against banding
+            float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+            col += (n - 0.5) * 0.012;
+            gl_FragColor = vec4(col, 1.0);
+            #include <colorspace_fragment>
+          }
+        `,
+      })
+    );
+    bg.position.z = -BG_DISTANCE;
+    bg.renderOrder = -1;
+    camera.add(bg);
+
+    // ---- glass ----
+    const glass = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      metalness: 0,
+      roughness: 0.04,
+      transmission: 1,
+      thickness: 1.8,
+      ior: 1.48,
+      iridescence: 0.55,
+      iridescenceIOR: 1.3,
+      clearcoat: 1,
+      clearcoatRoughness: 0.05,
+      envMapIntensity: 1.25,
+      attenuationColor: new THREE.Color(0xcfe6ff),
+      attenuationDistance: 3,
+      specularIntensity: 1,
+    });
+
+    const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(1.35, 0.46, lite ? 160 : 280, lite ? 24 : 40), glass);
+    scene.add(knot);
+    const shapes = [];
+    const geos = [
+      new THREE.IcosahedronGeometry(0.85, lite ? 4 : 6),
+      new THREE.TorusGeometry(0.72, 0.27, 32, lite ? 64 : 120),
+      new THREE.CapsuleGeometry(0.4, 0.85, 12, 32),
+      new THREE.OctahedronGeometry(0.85, 0),
+    ];
+    // spread down the page; x kept to the outer margins so shapes sit beside the content column
+    const layout = lite
+      ? [[-1.7, -7, -3], [1.9, -14, -3], [-1.6, -22, -3]]
+      : [[-6.4, -6, -3], [6.6, -11, -2], [-6.2, -17, -3.5], [6.4, -23, -2.5], [-6.6, -29, -3], [6.2, -35, -3.5]];
+    layout.forEach(([x, y, z], i) => {
+      const mesh = new THREE.Mesh(geos[i % geos.length], glass);
+      mesh.position.set(x, y, z);
+      mesh.userData = { x, y, spin: 0.12 + (i % 3) * 0.05, phase: i * 1.7 };
+      scene.add(mesh);
+      shapes.push(mesh);
+    });
+
+    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    key.position.set(3, 5, 6);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(0xffb48a, 0.8);
+    rim.position.set(-5, -2, 3);
+    scene.add(rim);
+
+    // ---- layout ----
+    function visibleHalf() {
+      const halfH = BG_DISTANCE * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      return { halfH, halfW: halfH * camera.aspect };
+    }
+    function layoutHero() {
+      // the knot lives at z≈0, 16 units from the camera
+      const halfH = 16 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      const halfW = halfH * camera.aspect;
+      if (innerWidth <= 600) {
+        knot.position.set(halfW * 0.35, -halfH * 1.25, -1);
+        knot.scale.setScalar(0.62);
+      } else {
+        knot.position.set(halfW * 0.64, halfH * 0.08, 0);
+        knot.scale.setScalar(Math.max(0.55, Math.min(1, halfW / 9.5)));
+      }
+      const spread = Math.min(1, halfW / 9);
+      shapes.forEach((m) => { m.userData.xs = m.userData.x * spread; });
+    }
+    function resize() {
+      renderer.setSize(innerWidth, innerHeight, false);
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      const { halfH, halfW } = visibleHalf();
+      bg.scale.set(halfW * 2.3, halfH * 2.3, 1);
+      bgUniforms.uAspect.value = camera.aspect;
+      layoutHero();
+    }
+    resize();
+    addEventListener("resize", resize);
+
+    const pointer = { x: 0, y: 0, tx: 0, ty: 0 };
+    addEventListener("pointermove", (e) => {
+      pointer.tx = (e.clientX / innerWidth) * 2 - 1;
+      pointer.ty = (e.clientY / innerHeight) * 2 - 1;
+    }, { passive: true });
+
+    // frame-rate independent smoothing
+    const ease = (rate, dt) => 1 - Math.exp(-rate * dt);
+    let t = 0, camY = 0, scrollF = 0;
+    function update(dt) {
+      t += dt;
+      const maxScroll = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+      const f = Math.min(1, Math.max(0, scrollY / maxScroll));
+      scrollF += (f - scrollF) * ease(6, dt);
+      camY = -scrollF * 38;
+      pointer.x += (pointer.tx - pointer.x) * ease(3, dt);
+      pointer.y += (pointer.ty - pointer.y) * ease(3, dt);
+      camera.position.set(pointer.x * 0.5, camY - pointer.y * 0.35, 16);
+      camera.lookAt(pointer.x * 0.15, camY, 0);
+
+      bgUniforms.uTime.value = t;
+      bgUniforms.uScroll.value = scrollF;
+
+      knot.rotation.x = t * 0.16 + pointer.y * 0.2;
+      knot.rotation.y = t * 0.22 + pointer.x * 0.3;
+      shapes.forEach((m) => {
+        const u = m.userData;
+        m.rotation.x = t * u.spin + u.phase;
+        m.rotation.y = t * u.spin * 1.25;
+        m.position.x = u.xs ?? u.x;
+        m.position.y = u.y + Math.sin(t * 0.5 + u.phase) * 0.3;
+      });
+    }
+
+    if (reduce.matches) {
+      update(0);
+      renderer.render(scene, camera);
+      addEventListener("resize", () => { update(0); renderer.render(scene, camera); });
+      return;
+    }
+
+    // Render on every display frame (no fixed cap: a cap that does not divide the refresh rate
+    // causes uneven frame pacing, which reads as stutter). Phones render every other frame.
+    let last = 0, frame = 0, running = true;
+    document.addEventListener("visibilitychange", () => { running = !document.hidden; last = 0; });
+    renderer.setAnimationLoop((now) => {
+      if (!running) return;
+      const dt = last ? Math.min((now - last) / 1000, 0.1) : 1 / 60;
+      last = now;
+      frame++;
+      update(dt);
+      if (lite && frame % 2) return;
+      renderer.render(scene, camera);
+    });
+  }
+
+  try { init(); } catch (e) { console.warn("3D background disabled:", e); canvas.remove(); }
+</script>
+
+</body>
+</html>

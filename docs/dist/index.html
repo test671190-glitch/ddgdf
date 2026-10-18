@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{color-scheme:dark}body{margin:0}[hidden]{display:none!important}</style>
+<title>unknown shop</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="unknown shop: 49 нейросетей для текста, изображений и видео по одному API-ключу. Тарифы, оплата через Telegram-бот и ответы на вопросы.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Unbounded:wght@500;700;800&display=swap">
+<style>
+  /* Layout: fixed 3D glass scene behind everything; a floating glass header, a sticky glass index
+     and a column of glass sheets that blur and tint whatever drifts behind them. */
+  /* Deliberately dark-only: one night-glass look regardless of the viewer's theme. */
+  :root {
+    --bg: #06070a;
+    --bg-deep: #0b0d12;
+    --ink: #eef0f5;
+    --muted: #a2a9b7;
+    --line: rgba(255, 255, 255, 0.1);
+    --glass: rgba(22, 25, 34, 0.5);
+    --glass-strong: rgba(30, 33, 44, 0.72);
+    --glass-edge: rgba(255, 255, 255, 0.26);
+    --glass-rim: rgba(0, 0, 0, 0.35);
+    --glass-lift: 0 30px 70px -30px rgba(0, 0, 0, 0.85), 0 2px 10px rgba(0, 0, 0, 0.35);
+    --spec: rgba(255, 255, 255, 0.14);
+    --signal: #ff8b4d;
+    --signal-soft: rgba(255, 139, 77, 0.14);
+    --cool: #47cfe0;
+    --cool-soft: rgba(71, 207, 224, 0.13);
+    --ok: #5fd39a;
+    --ok-soft: rgba(95, 211, 154, 0.13);
+    --gold: #f4c04e;
+    --gold-soft: rgba(244, 192, 78, 0.14);
+    --code-bg: rgba(5, 6, 9, 0.72);
+    --code-fg: #e8eaf0;
+    --code-dim: #7f8796;
+    --glow-a: #ff6a2b;
+    --glow-b: #1fb8cc;
+    --glow-c: #f2b632;
+    --font-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+    --font-body: "Golos Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    --radius: 24px;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: calc(110px + env(safe-area-inset-top, 0px)); }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 16px/1.65 var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: var(--signal); text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 8px; }
+  ::selection { background: var(--signal-soft); }
+
+  /* ---------- background: CSS glow + WebGL glass scene ---------- */
+  .backdrop { position: fixed; inset: 0; z-index: -2; pointer-events: none; overflow: hidden; background: var(--bg); }
+  .backdrop i { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.55; }
+  .backdrop i:nth-child(1) { width: 52vmax; height: 52vmax; left: -12vmax; top: -18vmax; background: var(--glow-a); animation: drift 26s ease-in-out infinite alternate; }
+  .backdrop i:nth-child(2) { width: 46vmax; height: 46vmax; right: -14vmax; top: 18vh; background: var(--glow-b); animation: drift 32s ease-in-out infinite alternate-reverse; }
+  .backdrop i:nth-child(3) { width: 30vmax; height: 30vmax; left: 30vw; bottom: -14vmax; background: var(--glow-c); opacity: 0.4; animation: drift 38s ease-in-out infinite alternate; }
+  @keyframes drift { to { transform: translate3d(6vmax, 5vmax, 0) scale(1.08); } }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+  .grain { position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.05; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+  /* ---------- liquid glass material ---------- */
+  .glass {
+    position: relative;
+    isolation: isolate;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(26px) saturate(185%) brightness(1.04);
+    backdrop-filter: blur(26px) saturate(185%) brightness(1.04);
+    border-radius: var(--radius);
+    box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 -1px 0 var(--glass-rim), var(--glass-lift);
+  }
+  /* light-catching rim: a gradient border that is brighter at the top-left and bottom-right */
+  .glass::before {
+    content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: linear-gradient(140deg, var(--glass-edge), transparent 32%, transparent 68%, var(--glass-edge));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  /* specular highlight that follows the pointer */
+  .glass::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+    background: radial-gradient(520px circle at var(--mx, 18%) var(--my, -10%), var(--spec), transparent 46%);
+    transition: opacity 0.4s ease;
+  }
+  @supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+    .glass { background: var(--glass-strong); }
+  }
+
+  /* ---------- header ---------- */
+  .topbar {
+    position: sticky; top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 20;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .topbar .bar {
+    max-width: 1200px; margin: 0 auto; border-radius: 999px;
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    padding: 9px 10px 9px 20px;
+  }
+  .wordmark { font: 800 17px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 6px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+  .redact { background: var(--ink); color: var(--bg); padding: 4px 7px 5px; border-radius: 3px; }
+  .wordmark small { font: 600 11px/1 var(--font-mono); color: var(--muted); margin-left: 6px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .topnav { display: flex; gap: 2px; }
+  .topnav a { color: var(--muted); text-decoration: none; font-size: 14px; padding: 8px 12px; border-radius: 999px; transition: background 0.2s, color 0.2s; }
+  .topnav a:hover { color: var(--ink); background: var(--glass-strong); }
+  .pill-btn {
+    display: inline-flex; align-items: center; gap: 8px; border: 0; cursor: pointer;
+    font: 600 14px/1 var(--font-body); padding: 11px 16px; border-radius: 999px; text-decoration: none; white-space: nowrap;
+    color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--signal) 82%, #fff), var(--signal));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 10px 24px -10px var(--signal);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .pill-btn:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 18px 36px -12px var(--signal); }
+  .pill-btn.ghost { color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 6px 18px -12px rgba(0, 0, 0, 0.4); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    max-width: 1200px; margin: 0 auto;
+    padding-block: clamp(56px, 10vh, 120px) 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid; gap: 22px; justify-items: start;
+  }
+  .eyebrow { display: inline-flex; align-items: center; gap: 10px; font: 600 12px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); padding: 9px 14px; border-radius: 999px; }
+  .eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px var(--ok-soft); }
+  .hero h1 { font: 800 clamp(40px, 8.2vw, 104px)/0.95 var(--font-display); letter-spacing: -0.045em; margin: 0; max-width: 11ch; text-wrap: balance; }
+  .hero h1 .redact { padding: 0 0.12em 0.04em; border-radius: 0.08em; }
+  .hero h1 .api { background: linear-gradient(120deg, var(--signal), var(--gold) 55%, var(--cool)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 56ch; margin: 0; }
+  .hero-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .base-url { display: inline-flex; align-items: center; gap: 12px; padding: 8px 8px 8px 18px; border-radius: 999px; max-width: 100%; }
+  .base-url span { font: 600 11px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+  .base-url code { font: 500 14px/1.2 var(--font-mono); color: var(--ink); overflow-wrap: anywhere; }
+  .chip-btn { font: 600 12px/1 var(--font-body); border: 0; cursor: pointer; padding: 9px 12px; border-radius: 999px; color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge); }
+  .chip-btn.done { color: var(--ok); }
+  .stats { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+  .stat { padding: 16px 20px; border-radius: 20px; min-width: 128px; display: grid; gap: 4px; }
+  .stat b { font: 800 34px/1 var(--font-display); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .stat span { font: 600 11px/1.2 var(--font-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .stat.t b { color: var(--signal); } .stat.i b { color: var(--cool); } .stat.v b { color: var(--gold); }
+  @media (prefers-reduced-motion: no-preference) {
+    .hero > * { animation: enter 0.9s cubic-bezier(.2, .8, .2, 1) both; }
+    .hero > *:nth-child(2) { animation-delay: 0.08s; } .hero > *:nth-child(3) { animation-delay: 0.16s; }
+    .hero > *:nth-child(4) { animation-delay: 0.24s; } .hero > *:nth-child(5) { animation-delay: 0.32s; }
+  }
+  /* transform only: the text stays readable at every moment, even if the animation is paused */
+  @keyframes enter { from { transform: translateY(18px); } }
+
+  /* ---------- shell ---------- */
+  .shell {
+    max-width: 1200px; margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 24px 80px;
+    display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 28px; align-items: start;
+  }
+  nav.toc { position: sticky; top: calc(96px + env(safe-area-inset-top, 0px)); padding: 16px 12px; max-height: calc(100vh - 120px); overflow-y: auto; scrollbar-width: none; }
+  nav.toc::-webkit-scrollbar { display: none; }
+  .toc-group { display: grid; gap: 2px; margin-bottom: 14px; }
+  .toc-group:last-child { margin-bottom: 0; }
+  .toc-label { font: 600 10.5px/1 var(--font-mono); text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); padding: 6px 12px 8px; }
+  .toc a { position: relative; display: block; padding: 7px 12px; border-radius: 12px; color: var(--muted); text-decoration: none; font-size: 14px; line-height: 1.3; transition: color 0.2s, background 0.25s; }
+  .toc a:hover { color: var(--ink); }
+  .toc a.active { color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 6px 16px -10px rgba(0, 0, 0, 0.35); }
+  .toc a.active::before { content: ""; position: absolute; left: 4px; top: 50%; width: 3px; height: 14px; margin-top: -7px; border-radius: 3px; background: var(--signal); }
+
+  main { min-width: 0; display: grid; gap: 22px; }
+  .sheet { padding: clamp(22px, 3.4vw, 40px); min-width: 0; }
+  .prose { max-width: 70ch; }
+  h2 { font: 700 clamp(22px, 2.6vw, 30px)/1.15 var(--font-display); letter-spacing: -0.025em; margin: 0 0 14px; text-wrap: balance; }
+  h3 { font: 600 17px/1.3 var(--font-body); margin: 26px 0 10px; }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  .kicker { font: 600 11px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--signal); margin-bottom: 10px; display: block; }
+  :not(pre) > code { font: 500 0.86em/1 var(--font-mono); background: var(--glass-strong); padding: 3px 6px; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line); overflow-wrap: anywhere; }
+
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      .sheet { animation: rise linear both; animation-timeline: view(); animation-range: entry 0% entry 38%; }
+    }
+  }
+  @keyframes rise { from { transform: translateY(46px) scale(0.975); opacity: 0.3; } }
+
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 6px 0 16px; padding: 0; list-style: none; counter-reset: s; }
+  .steps li { counter-increment: s; margin: 0; padding: 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 10px 26px -18px rgba(0, 0, 0, 0.45); display: grid; gap: 8px; align-content: start; }
+  .steps li::before { content: counter(s); font: 800 22px/1 var(--font-display); color: var(--signal); }
+
+  .endpoint { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 16px; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge); font: 500 15px/1.3 var(--font-mono); }
+  .method { font: 700 11.5px/1 var(--font-mono); letter-spacing: 0.06em; padding: 7px 10px; border-radius: 999px; }
+  .method.post { background: var(--signal-soft); color: var(--signal); }
+  .method.get { background: var(--ok-soft); color: var(--ok); }
+
+  .code {
+    position: relative; margin: 0 0 18px; border-radius: 18px; min-width: 0;
+    background: var(--code-bg); color: var(--code-fg);
+    -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 48px -28px rgba(0, 0, 0, 0.65);
+  }
+  .code-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 10px 0 18px; font: 500 12px/1 var(--font-mono); color: var(--code-dim); letter-spacing: 0.04em; }
+  .code-head .lights { display: inline-flex; gap: 6px; margin-right: 10px; }
+  .code-head .lights i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255, 255, 255, 0.14); }
+  .code-head .lights i:nth-child(1) { background: #ff5f57; } .code-head .lights i:nth-child(2) { background: #febc2e; } .code-head .lights i:nth-child(3) { background: #28c840; }
+  .code pre { margin: 0; padding: 14px 18px 18px; overflow-x: auto; font: 400 13.5px/1.65 var(--font-mono); tab-size: 2; }
+  .copy { font: 600 12px/1 var(--font-body); color: var(--code-dim); background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; padding: 7px 11px; cursor: pointer; transition: color 0.2s, border-color 0.2s; }
+  .copy:hover { color: var(--code-fg); border-color: rgba(255, 255, 255, 0.3); }
+  .copy.done { color: #5fd39a; border-color: currentColor; }
+
+  /* iOS-style segmented control */
+  .segmented { position: relative; display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 4px; border-radius: 999px; margin-bottom: 14px; background: var(--glass-strong); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 0 0 1px var(--line); max-width: 100%; }
+  .segmented .thumb { position: absolute; top: 4px; bottom: 4px; left: 4px; border-radius: 999px; background: var(--bg); box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.45), inset 0 1px 0 var(--glass-edge); transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1), width 0.3s ease; }
+  .segmented button { position: relative; z-index: 1; border: 0; background: none; cursor: pointer; font: 600 13px/1 var(--font-mono); color: var(--muted); padding: 10px 18px; border-radius: 999px; transition: color 0.25s; }
+  .segmented button[aria-selected="true"], .segmented button[aria-pressed="true"] { color: var(--ink); }
+
+  .table-wrap { overflow-x: auto; margin: 0 0 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 0 0 1px var(--line); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr { transition: background 0.2s; }
+  tbody tr:hover { background: var(--signal-soft); }
+  th { font: 600 10.5px/1.2 var(--font-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); white-space: nowrap; }
+  td code { white-space: nowrap; }
+  .req { font: 700 9.5px/1 var(--font-mono); color: var(--signal); text-transform: uppercase; letter-spacing: 0.1em; display: block; margin-top: 5px; }
+  .num { font: 600 13.5px var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  .note { padding: 16px 18px; border-radius: 18px; margin: 0 0 18px; font-size: 15px; background: var(--signal-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--signal) 25%, transparent); }
+  .note strong { color: var(--signal); }
+
+  details.tool { border-radius: 18px; margin-bottom: 10px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 0 0 1px var(--line); overflow: hidden; }
+  details.tool summary { cursor: pointer; padding: 15px 18px; font-weight: 600; display: flex; align-items: center; gap: 12px; list-style: none; }
+  details.tool summary::-webkit-details-marker { display: none; }
+  details.tool summary .proto { margin-left: auto; font: 600 11px/1 var(--font-mono); letter-spacing: 0.06em; color: var(--muted); padding: 6px 9px; border-radius: 999px; background: var(--glass); }
+  details.tool summary::after { content: ""; width: 9px; height: 9px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg) translateY(-2px); transition: transform 0.3s ease; }
+  details.tool[open] summary::after { transform: rotate(225deg) translateY(-2px); }
+  details.tool .body { padding: 0 18px 8px; min-width: 0; }
+
+  /* model orbit */
+  .orbit-card { position: relative; margin: 6px 0 18px; border-radius: 22px; overflow: hidden; background: radial-gradient(120% 90% at 50% 40%, var(--glass-strong), transparent 70%); box-shadow: inset 0 0 0 1px var(--line); }
+  #orbit { display: block; width: 100%; height: 380px; cursor: grab; touch-action: pan-y; }
+  .orbit-tip { position: absolute; pointer-events: none; padding: 10px 12px; border-radius: 14px; font-size: 13px; line-height: 1.35; transform: translate(-50%, calc(-100% - 14px)); white-space: nowrap; }
+  .orbit-tip b { display: block; font-weight: 600; }
+  .orbit-tip code { font: 500 12px var(--font-mono); color: var(--muted); }
+  .orbit-hint { position: absolute; left: 16px; bottom: 12px; font: 500 12px/1.3 var(--font-mono); color: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .legend .chip { display: inline-flex; align-items: center; gap: 8px; font: 600 13px/1 var(--font-body); padding: 9px 13px; border-radius: 999px; border: 0; cursor: pointer; color: var(--muted); background: var(--glass-strong); box-shadow: inset 0 0 0 1px var(--line); transition: color 0.2s, box-shadow 0.2s; }
+  .legend .chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .legend .chip[data-filter="text"] i { background: var(--signal); }
+  .legend .chip[data-filter="image"] i { background: var(--cool); }
+  .legend .chip[data-filter="video"] i { background: var(--gold); }
+  .legend .chip[aria-pressed="true"] { color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); }
+  .search { flex: 1 1 220px; min-width: 0; font: 400 14px/1 var(--font-body); padding: 11px 16px; border-radius: 999px; border: 0; color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08), inset 0 0 0 1px var(--line); }
+  .id-btn { font: 500 13px/1.2 var(--font-mono); color: var(--ink); background: transparent; border: 0; border-radius: 6px; padding: 3px 5px; margin-left: -5px; cursor: copy; white-space: nowrap; }
+  .id-btn:hover { background: var(--glass); }
+  .id-btn.done { color: var(--ok); }
+  .lvl { font: 400 12.5px/1.8 var(--font-mono); color: var(--muted); }
+  .lvl b { color: var(--ink); font-weight: 600; }
+  .type-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+  .empty-row td { color: var(--muted); text-align: center; }
+
+  .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin: 4px 0 20px; perspective: 1200px; }
+  .plan { --acc: var(--signal); --acc-soft: var(--signal-soft); padding: 24px; border-radius: 22px; display: grid; gap: 12px; align-content: start; transition: transform 0.35s cubic-bezier(.2, .8, .2, 1); will-change: transform; }
+  .plan.gold { --acc: var(--gold); --acc-soft: var(--gold-soft); }
+  .plan h3 { margin: 0; font: 800 22px/1.1 var(--font-display); display: flex; align-items: center; gap: 12px; }
+  .plan-ico {
+    width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 13px;
+    color: #fff;
+    background: radial-gradient(120% 120% at 30% 15%, color-mix(in srgb, var(--acc) 55%, #fff) 0%, var(--acc) 45%, color-mix(in srgb, var(--acc) 55%, #000) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), inset 0 -2px 6px rgba(0, 0, 0, 0.25), 0 10px 24px -10px var(--acc);
+  }
+  .plan-ico svg { width: 20px; height: 20px; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25)); }
+  .plan .badge { font: 700 10px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; padding: 6px 8px; border-radius: 999px; color: var(--acc); background: var(--acc-soft); }
+  .plan .price { font: 800 40px/1 var(--font-display); letter-spacing: -0.03em; }
+  .plan .price small { font: 500 14px var(--font-body); color: var(--muted); letter-spacing: 0; }
+  .plan ul { margin: 4px 0 0; padding-left: 0; list-style: none; display: grid; gap: 10px; }
+  .plan li { margin: 0; padding-left: 32px; position: relative; }
+  .plan li::before { content: ""; position: absolute; left: 0; top: 0.15em; width: 20px; height: 20px; border-radius: 50%; background: var(--acc-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--acc) 35%, transparent); }
+  .plan li::after {
+    content: ""; position: absolute; left: 5px; top: calc(0.15em + 5px); width: 10px; height: 10px; background: var(--acc);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.3 4 7.6 8.6 2.4' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.3 4 7.6 8.6 2.4' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  .plan.featured { box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 0 0 1.5px color-mix(in srgb, var(--acc) 55%, transparent), 0 30px 60px -28px var(--acc); }
+
+  footer { padding-block: 0 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  footer .inner { max-width: 1200px; margin: 0 auto; padding: 18px 24px; border-radius: 999px; color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+
+  .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translate(-50%, 140%); padding: 12px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1); }
+  .toast.show { transform: translate(-50%, 0); }
+
+  /* Springy hover: controls swell under the pointer and press in on click, like iOS glass buttons. */
+  .pill-btn, .chip-btn, .copy, .legend .chip, .id-btn, .topnav a, .segmented button, .wordmark {
+    transition: transform 0.45s cubic-bezier(.34, 1.56, .64, 1), box-shadow 0.3s ease, background 0.2s ease, color 0.2s ease;
+    will-change: transform;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .pill-btn:hover { transform: scale(1.08); }
+    .chip-btn:hover, .copy:hover { transform: scale(1.1); }
+    .legend .chip:hover, .topnav a:hover, .segmented button:hover { transform: scale(1.07); }
+    .id-btn:hover { transform: scale(1.05); }
+    .wordmark:hover { transform: scale(1.04); }
+    .legend .chip:hover { box-shadow: inset 0 0 0 1px var(--line), 0 10px 22px -12px rgba(0, 0, 0, 0.7); }
+    .chip-btn:hover { box-shadow: inset 0 1px 0 var(--glass-edge), 0 8px 18px -10px rgba(0, 0, 0, 0.7); }
+  }
+  .pill-btn:active, .chip-btn:active, .copy:active, .legend .chip:active, .id-btn:active, .topnav a:active, .segmented button:active {
+    transform: scale(0.95);
+    transition-duration: 0.12s;
+  }
+
+  /* page tabs in the header */
+  .topnav { padding: 3px; border-radius: 999px; background: rgba(0, 0, 0, 0.18); box-shadow: inset 0 0 0 1px var(--line); }
+  .topnav a { font-weight: 600; padding: 8px 16px; }
+  .topnav a[aria-current="page"] { color: var(--ink); background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 6px 16px -10px rgba(0, 0, 0, 0.6); }
+
+  /* single-column pages (home) */
+  .shell.single { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
+  .section-head { display: grid; gap: 6px; margin-bottom: 18px; }
+  .section-head h2 { margin: 0; }
+  .section-head p { margin: 0; color: var(--muted); max-width: 60ch; }
+  .plan .buy { justify-self: start; margin-top: 8px; }
+  .plan.gold .buy { color: #1b1404; background: linear-gradient(180deg, color-mix(in srgb, var(--gold) 75%, #fff), var(--gold)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 10px 24px -10px var(--gold); }
+  .pay-note { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 14px; }
+  .pay-note span::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 8px; vertical-align: 2px; }
+  details.faq summary { font-weight: 600; justify-content: space-between; }
+  details.faq summary::after { flex: none; margin-left: 12px; }
+  details.faq .body p { color: var(--muted); }
+  .cta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+  .cta h2 { margin: 0; }
+
+  @media (max-width: 960px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 16px; padding-block: 8px 56px; }
+    nav.toc { top: calc(76px + env(safe-area-inset-top, 0px)); z-index: 15; max-height: none; display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden; padding: 6px; border-radius: 999px; }
+    .toc-group { display: contents; }
+    .toc-label { display: none; }
+    .toc a { white-space: nowrap; border-radius: 999px; }
+    .toc a.active::before { display: none; }
+    html { scroll-padding-top: calc(140px + env(safe-area-inset-top, 0px)); }
+  }
+  @media (max-width: 560px) {
+    .topbar .bar { padding-left: 16px; }
+    .topbar .pill-btn { display: none; }
+    .topbar .bar { padding-right: 6px; }
+    .wordmark { font-size: 15px; }
+    .topnav a { padding: 8px 12px; font-size: 13px; }
+    .stat { min-width: 0; flex: 1 1 90px; padding: 14px; }
+    #orbit { height: 300px; }
+    .glass { -webkit-backdrop-filter: blur(18px) saturate(170%); backdrop-filter: blur(18px) saturate(170%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .backdrop i { animation: none; }
+    * { transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="backdrop" aria-hidden="true"><i></i><i></i><i></i></div>
+<canvas id="scene" aria-hidden="true"></canvas>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="bar glass">
+    <a class="wordmark" href="./"><span class="redact">unknown</span> shop</a>
+    <nav class="topnav" aria-label="Страницы">
+      <a href="./" aria-current="page">Главное</a>
+      <a href="api.html">API</a>
+    </nav>
+    <a class="pill-btn" href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">↗ <span>Telegram-бот</span></a>
+  </div>
+</header>
+
+<section class="hero" id="overview">
+  <div class="eyebrow glass"><span class="dot"></span>49 моделей · один ключ</div>
+  <h1>Все нейросети. <span class="api">Один ключ.</span></h1>
+  <p class="lead">GPT-6, Claude Opus 5.5, Gemini, Grok, Nano Banana, Veo 3.1 и ещё четыре десятка моделей для текста, изображений и видео. Подключаются к Cursor, Claude Code и любым программам через API.</p>
+  <div class="hero-row">
+    <a class="pill-btn" href="#pricing">Выбрать тариф</a>
+    <a class="pill-btn ghost" href="api.html">Документация API →</a>
+  </div>
+  <div class="stats" aria-label="Количество моделей">
+    <div class="stat glass t"><b>32</b><span>текстовые</span></div>
+    <div class="stat glass i"><b>8</b><span>изображения</span></div>
+    <div class="stat glass v"><b>9</b><span>видео</span></div>
+  </div>
+</section>
+
+<div class="shell single">
+  <main>
+    <section class="sheet glass" id="pricing">
+      <div class="section-head">
+        <span class="kicker">Тарифы</span>
+        <h2>Выберите тариф</h2>
+        <p>Все модели в каждом тарифе, отличаются только лимиты. Оплата проходит в нашем Telegram-боте, ключ приходит сразу после оплаты.</p>
+      </div>
+      <div class="plans">
+        <div class="plan glass tilt featured">
+          <h3><span class="plan-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.6 2.2 5 13.1c-.3.4 0 1 .5 1h5.3l-1.5 7.4c-.1.6.6.9 1 .4l8.6-10.9c.3-.4 0-1-.5-1h-5.3l1.5-7.4c.1-.6-.6-.9-1-.4Z"/></svg></span>Pro <span class="badge">Популярный</span></h3>
+          <div class="price">$33 <small>/ 30 дней</small></div>
+          <ul>
+          <li>Безлимит на генерацию изображений</li>
+          <li>Безлимит на текстовые модели 15 часов в день</li>
+          <li>Безлимит на видео 10 часов в день</li>
+          <li>Доступ к API</li>
+          </ul>
+          <a class="pill-btn buy" href="https://t.me/UnknownAiShopBot?start=buy_pro" target="_blank" rel="noopener">Купить Pro в боте ↗</a>
+        </div>
+        <div class="plan glass tilt gold">
+          <h3><span class="plan-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.2 8.3c-.2-.7.6-1.2 1.2-.8l3.9 2.9 2.9-5c.4-.6 1.2-.6 1.6 0l2.9 5 3.9-2.9c.6-.4 1.4.1 1.2.8l-1.9 8.6c-.1.4-.5.7-.9.7H6c-.4 0-.8-.3-.9-.7L3.2 8.3Z"/><rect x="5.5" y="19" width="13" height="2.2" rx="1.1"/></svg></span>Unlimited</h3>
+          <div class="price">$80 <small>/ 30 дней</small></div>
+          <ul>
+          <li>Полный безлимит на все модели</li>
+          <li>Текст, изображения и видео круглосуточно</li>
+          <li>Безлимитный доступ к API</li>
+          </ul>
+          <a class="pill-btn buy" href="https://t.me/UnknownAiShopBot?start=buy_unlimited" target="_blank" rel="noopener">Купить Unlimited в боте ↗</a>
+        </div>
+      </div>
+      <div class="pay-note">
+        <span>Telegram Stars</span>
+        <span>Криптовалюта: USDT, TON, BTC и другие</span>
+        <span>Без автопродления</span>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="how">
+      <div class="section-head">
+        <span class="kicker">Как начать</span>
+        <h2>Три шага до первого ответа</h2>
+      </div>
+      <ol class="steps">
+        <li>Нажмите «Купить» у нужного тарифа — откроется бот на странице оплаты.</li>
+        <li>Оплатите в Telegram Stars или криптой. Бот сразу пришлёт API-ключ.</li>
+        <li>Вставьте ключ в Cursor, Claude Code или свой код по инструкции из <a href="api.html#quickstart">документации</a>.</li>
+      </ol>
+    </section>
+
+    <section class="sheet glass" id="faq">
+      <div class="section-head">
+        <span class="kicker">FAQ</span>
+        <h2>Частые вопросы</h2>
+        <p>Не нашли ответ — напишите в поддержку через <a href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">Telegram-бот</a>.</p>
+      </div>
+      <details class="tool faq" open>
+        <summary>Какие модели доступны?</summary>
+        <div class="body"><p>Текстовые модели GPT-6, GPT-5.6, Claude Opus и Fable, Gemini, модели для изображений Nano Banana, GPT Image, Grok Imagine, Seedream, Recraft и FLUX.2, а для видео Seedance, Veo 3.1, Gemini Omni, PixVerse и Kling. Полный список с ID для API — в разделе <a href="api.html#models">Модели</a>.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>В чём разница тарифов?</summary>
+        <div class="body"><p>Оба тарифа открывают через API все модели для текста, изображений и видео, отличаются лимиты. Pro ($33): изображения без ограничений, безлимит на текст 15 часов в день и на видео 10 часов в день. Unlimited ($80): полный безлимит на все модели круглосуточно.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Действительно ли на тарифе Unlimited безлимит?</summary>
+        <div class="body"><p>Да, так и есть. На тарифе Unlimited нет ограничений на текст, изображения и видео, в том числе на запросы через API.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Почему у вас безлимитные тарифы, если у других есть лимиты?</summary>
+        <div class="body"><p>Другие сервисы стремятся получить максимальную выгоду. Мы же стремимся расширить клиентскую базу, поэтому сейчас предлагаем безлимитные тарифы: так мы собираем сообщество и постоянных клиентов. Можете считать это нашей рекламной акцией.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Есть ли ограничения на запросы в минуту или секунду?</summary>
+        <div class="body"><p>Нет. Сейчас мы не вводим лимитов на количество запросов за период, поэтому можно отправлять хоть 100 запросов в минуту, и все они будут обработаны.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Какие нейросети под капотом текстовых моделей?</summary>
+        <div class="body"><p>Понимаем, откуда вопрос: недобросовестные агрегаторы заявляют популярные нейросети вроде GPT и Claude, а на деле отвечают китайские модели. У нас подмены нет, и это легко проверить: спросите модель, кто она, или измените промпт, чтобы добиться честного ответа. Вы всегда получите ответ именно от выбранной модели. Разницу видно и по качеству работы.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Как работает доступ по тарифу?</summary>
+        <div class="body"><p>Для отправки запросов нужен активный тариф. Его статус и срок действия всегда видны в <a href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">Telegram-боте</a>, раздел «Профиль».</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Можно ли передавать картинки и видео?</summary>
+        <div class="body"><p>Да. Модели изображений и видео принимают референсы в параметре images: до 16 картинок у GPT Image, до 14 у Nano Banana, до 5 у Grok. Для видео можно задать первый и последний кадр, а для Motion Control нужны фото персонажа и ролик с движением.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Где хранится история диалогов?</summary>
+        <div class="body"><p>В API история передаётся в параметре messages при каждом запросе, поэтому храните её на своей стороне. IDE и чат-клиенты вроде Cursor, Cline или Claude Code делают это сами.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Какие параметры можно настроить?</summary>
+        <div class="body"><p>Параметры у каждой модели свои, как у провайдера. Для текста: уровень рассуждения, веб-поиск, а у GPT ещё длина ответа. Для изображений: формат, разрешение до 4K, количество, у GPT Image и Grok качество, у Recraft вектор SVG. Для видео: формат, длительность до 30 секунд, разрешение до 4K и звук.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Есть ли API?</summary>
+        <div class="body"><p>Да, документация на странице <a href="api.html">API</a>. API можно полностью использовать в IDE и других программах, например в Cursor и Claude Code, или отправлять запросы через cURL и работать с моделями unknown shop напрямую. Запросы идут в рамках купленного тарифа, поэтому покупать отдельные кредиты для API, как в других сервисах, не нужно. API входит во все тарифы.</p></div>
+      </details>
+      <details class="tool faq">
+        <summary>Как отменить подписку?</summary>
+        <div class="body"><p>Подписка в боте оплачивается на 30 дней и не продлевается автоматически, поэтому отменять ничего не нужно: доступ сохраняется до конца оплаченного периода. За 3 дня до окончания бот напомнит о продлении.</p></div>
+      </details>
+    </section>
+
+    <section class="sheet glass cta">
+      <h2>Готовы начать?</h2>
+      <div class="hero-row">
+        <a class="pill-btn" href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">Открыть Telegram-бот ↗</a>
+        <a class="pill-btn ghost" href="api.html">Документация API</a>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="inner glass">
+    <span><b>unknown shop</b> API</span>
+    <span>Тариф, ключ и поддержка — в <a href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">Telegram-боте</a></span>
+  </div>
+</footer>
+
+<div class="toast glass" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+  (function () {
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+    var fine = window.matchMedia("(pointer: fine)");
+    var toastEl = document.getElementById("toast");
+    var toastTimer;
+
+    function toast(text) {
+      toastEl.textContent = text;
+      toastEl.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1600);
+    }
+
+    function copyText(text, el, label) {
+      function done() {
+        if (el) {
+          el.classList.add("done");
+          var old = el.dataset.label || el.textContent;
+          el.dataset.label = old;
+          if (label) el.textContent = label;
+          setTimeout(function () { el.classList.remove("done"); if (label) el.textContent = old; }, 1400);
+        }
+        toast("Скопировано");
+      }
+      function fallback() {
+        var target = el && el.closest(".code") ? el.closest(".code").querySelector("pre") : el;
+        if (!target) return;
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        toast("Выделено — нажмите Ctrl+C");
+      }
+      try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+    }
+    window.__copyText = copyText;
+
+    // copy buttons for code blocks and data-copy chips
+    document.querySelectorAll(".code").forEach(function (block) {
+      var head = block.querySelector(".code-head");
+      var pre = block.querySelector("pre");
+      if (!head || !pre) return;
+      var btn = document.createElement("button");
+      btn.className = "copy";
+      btn.type = "button";
+      btn.textContent = "Копировать";
+      btn.addEventListener("click", function () { copyText(pre.textContent, btn, "Скопировано"); });
+      head.appendChild(btn);
+    });
+    document.querySelectorAll("[data-copy]").forEach(function (btn) {
+      btn.addEventListener("click", function () { copyText(btn.dataset.copy, btn, "Скопировано"); });
+    });
+
+    // segmented control (quick start) — only on pages that have one
+    var seg = document.querySelector(".segmented");
+    if (seg) initSegmented(seg);
+    function initSegmented(seg) {
+    var thumb = seg.querySelector(".thumb");
+    var tabs = Array.prototype.slice.call(seg.querySelectorAll("button"));
+    function placeThumb(tab) {
+      thumb.style.width = tab.offsetWidth + "px";
+      thumb.style.transform = "translateX(" + (tab.offsetLeft - 4) + "px)";
+    }
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          t.setAttribute("aria-selected", on ? "true" : "false");
+          document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+        });
+        placeThumb(tab);
+      });
+    });
+    placeThumb(tabs[0]);
+    window.addEventListener("resize", function () { placeThumb(seg.querySelector('[aria-selected="true"]')); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { placeThumb(seg.querySelector('[aria-selected="true"]')); });
+    }
+
+    // specular highlight follows the pointer on glass
+    if (fine.matches) {
+      document.addEventListener("pointermove", function (e) {
+        var g = e.target.closest && e.target.closest(".glass");
+        if (!g) return;
+        var r = g.getBoundingClientRect();
+        g.style.setProperty("--mx", (e.clientX - r.left) + "px");
+        g.style.setProperty("--my", (e.clientY - r.top) + "px");
+      }, { passive: true });
+    }
+
+    // 3D tilt on plan cards
+    if (fine.matches && !reduce.matches) {
+      document.querySelectorAll(".tilt").forEach(function (card) {
+        card.addEventListener("pointermove", function (e) {
+          var r = card.getBoundingClientRect();
+          var x = (e.clientX - r.left) / r.width - 0.5;
+          var y = (e.clientY - r.top) / r.height - 0.5;
+          card.style.transform = "rotateX(" + (-y * 8).toFixed(2) + "deg) rotateY(" + (x * 10).toFixed(2) + "deg) translateZ(0)";
+        });
+        card.addEventListener("pointerleave", function () { card.style.transform = ""; });
+      });
+    }
+
+    // active section in the index
+    var links = {};
+    document.querySelectorAll(".toc a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+    if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          Object.keys(links).forEach(function (id) { links[id].classList.toggle("active", id === entry.target.id); });
+          var active = links[entry.target.id];
+          if (active && window.matchMedia("(max-width: 960px)").matches) {
+            active.scrollIntoView({ block: "nearest", inline: "center", behavior: reduce.matches ? "auto" : "smooth" });
+          }
+        });
+      }, { rootMargin: "-25% 0px -65% 0px" });
+      document.querySelectorAll("main section").forEach(function (s) { io.observe(s); });
+    }
+  })();
+</script>
+
+<script type="importmap">
+  { "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  } }
+</script>
+<script type="module">
+  // Background scene: an opaque, slowly flowing colour field (a shader on a plane fixed to the
+  // camera) with refracting glass shapes in front of it. The colour field is opaque on purpose:
+  // three.js transmission only refracts opaque geometry, so the glass now bends real colour.
+  import * as THREE from "three";
+  import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+  const canvas = document.getElementById("scene");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  const lite = matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+  const BG_DISTANCE = 40;
+
+  function init() {
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: !lite, alpha: false, powerPreference: "high-performance" });
+    } catch (e) {
+      canvas.remove();
+      return;
+    }
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, lite ? 1 : 1.25));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    if ("transmissionResolutionScale" in renderer) renderer.transmissionResolutionScale = lite ? 0.35 : 0.5;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+    camera.position.set(0, 0, 16);
+    scene.add(camera);
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    // ---- flowing colour field ----
+    const cs = getComputedStyle(document.documentElement);
+    const css = (name, fallback) => new THREE.Color(cs.getPropertyValue(name).trim() || fallback);
+    const bgUniforms = {
+      uTime: { value: 0 },
+      uScroll: { value: 0 },
+      uAspect: { value: 1 },
+      uBase: { value: css("--bg", "#06070a") },
+      uA: { value: css("--glow-a", "#ff6a2b") },
+      uB: { value: css("--glow-b", "#1fb8cc") },
+      uC: { value: css("--glow-c", "#f2b632") },
+    };
+    const bg = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.ShaderMaterial({
+        uniforms: bgUniforms,
+        depthWrite: false,
+        vertexShader: /* glsl */ `
+          varying vec2 vUv;
+          void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+        `,
+        fragmentShader: /* glsl */ `
+          uniform float uTime, uScroll, uAspect;
+          uniform vec3 uBase, uA, uB, uC;
+          varying vec2 vUv;
+          float blob(vec2 p, vec2 c, float r) { vec2 d = p - c; return exp(-dot(d, d) / (r * r)); }
+          void main() {
+            vec2 p = vec2(vUv.x * uAspect, vUv.y);
+            float t = uTime;
+            float s = uScroll;
+            vec2 a = vec2(uAspect * (0.12 + 0.06 * sin(t * 0.13)), 0.86 + 0.05 * cos(t * 0.11) - s * 0.55);
+            vec2 b = vec2(uAspect * (0.88 + 0.05 * cos(t * 0.09)), 0.42 + 0.07 * sin(t * 0.12) + s * 0.25);
+            vec2 c = vec2(uAspect * (0.45 + 0.08 * sin(t * 0.07 + 1.3)), -0.05 + 0.06 * cos(t * 0.1) + s * 0.9);
+            vec3 col = uBase;
+            col += uA * blob(p, a, 0.36) * 0.5;
+            col += uB * blob(p, b, 0.4) * 0.45;
+            col += uC * blob(p, c, 0.3) * 0.32;
+            // fine film grain against banding
+            float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+            col += (n - 0.5) * 0.012;
+            gl_FragColor = vec4(col, 1.0);
+            #include <colorspace_fragment>
+          }
+        `,
+      })
+    );
+    bg.position.z = -BG_DISTANCE;
+    bg.renderOrder = -1;
+    camera.add(bg);
+
+    // ---- glass ----
+    const glass = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      metalness: 0,
+      roughness: 0.04,
+      transmission: 1,
+      thickness: 1.8,
+      ior: 1.48,
+      iridescence: 0.55,
+      iridescenceIOR: 1.3,
+      clearcoat: 1,
+      clearcoatRoughness: 0.05,
+      envMapIntensity: 1.25,
+      attenuationColor: new THREE.Color(0xcfe6ff),
+      attenuationDistance: 3,
+      specularIntensity: 1,
+    });
+
+    const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(1.35, 0.46, lite ? 160 : 280, lite ? 24 : 40), glass);
+    scene.add(knot);
+    const shapes = [];
+    const geos = [
+      new THREE.IcosahedronGeometry(0.85, lite ? 4 : 6),
+      new THREE.TorusGeometry(0.72, 0.27, 32, lite ? 64 : 120),
+      new THREE.CapsuleGeometry(0.4, 0.85, 12, 32),
+      new THREE.OctahedronGeometry(0.85, 0),
+    ];
+    // spread down the page; x kept to the outer margins so shapes sit beside the content column
+    const layout = lite
+      ? [[-1.7, -7, -3], [1.9, -14, -3], [-1.6, -22, -3]]
+      : [[-6.4, -6, -3], [6.6, -11, -2], [-6.2, -17, -3.5], [6.4, -23, -2.5], [-6.6, -29, -3], [6.2, -35, -3.5]];
+    layout.forEach(([x, y, z], i) => {
+      const mesh = new THREE.Mesh(geos[i % geos.length], glass);
+      mesh.position.set(x, y, z);
+      mesh.userData = { x, y, spin: 0.12 + (i % 3) * 0.05, phase: i * 1.7 };
+      scene.add(mesh);
+      shapes.push(mesh);
+    });
+
+    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    key.position.set(3, 5, 6);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(0xffb48a, 0.8);
+    rim.position.set(-5, -2, 3);
+    scene.add(rim);
+
+    // ---- layout ----
+    function visibleHalf() {
+      const halfH = BG_DISTANCE * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      return { halfH, halfW: halfH * camera.aspect };
+    }
+    function layoutHero() {
+      // the knot lives at z≈0, 16 units from the camera
+      const halfH = 16 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      const halfW = halfH * camera.aspect;
+      if (innerWidth <= 600) {
+        knot.position.set(halfW * 0.35, -halfH * 1.25, -1);
+        knot.scale.setScalar(0.62);
+      } else {
+        knot.position.set(halfW * 0.64, halfH * 0.08, 0);
+        knot.scale.setScalar(Math.max(0.55, Math.min(1, halfW / 9.5)));
+      }
+      const spread = Math.min(1, halfW / 9);
+      shapes.forEach((m) => { m.userData.xs = m.userData.x * spread; });
+    }
+    function resize() {
+      renderer.setSize(innerWidth, innerHeight, false);
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      const { halfH, halfW } = visibleHalf();
+      bg.scale.set(halfW * 2.3, halfH * 2.3, 1);
+      bgUniforms.uAspect.value = camera.aspect;
+      layoutHero();
+    }
+    resize();
+    addEventListener("resize", resize);
+
+    const pointer = { x: 0, y: 0, tx: 0, ty: 0 };
+    addEventListener("pointermove", (e) => {
+      pointer.tx = (e.clientX / innerWidth) * 2 - 1;
+      pointer.ty = (e.clientY / innerHeight) * 2 - 1;
+    }, { passive: true });
+
+    // frame-rate independent smoothing
+    const ease = (rate, dt) => 1 - Math.exp(-rate * dt);
+    let t = 0, camY = 0, scrollF = 0;
+    function update(dt) {
+      t += dt;
+      const maxScroll = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+      const f = Math.min(1, Math.max(0, scrollY / maxScroll));
+      scrollF += (f - scrollF) * ease(6, dt);
+      camY = -scrollF * 38;
+      pointer.x += (pointer.tx - pointer.x) * ease(3, dt);
+      pointer.y += (pointer.ty - pointer.y) * ease(3, dt);
+      camera.position.set(pointer.x * 0.5, camY - pointer.y * 0.35, 16);
+      camera.lookAt(pointer.x * 0.15, camY, 0);
+
+      bgUniforms.uTime.value = t;
+      bgUniforms.uScroll.value = scrollF;
+
+      knot.rotation.x = t * 0.16 + pointer.y * 0.2;
+      knot.rotation.y = t * 0.22 + pointer.x * 0.3;
+      shapes.forEach((m) => {
+        const u = m.userData;
+        m.rotation.x = t * u.spin + u.phase;
+        m.rotation.y = t * u.spin * 1.25;
+        m.position.x = u.xs ?? u.x;
+        m.position.y = u.y + Math.sin(t * 0.5 + u.phase) * 0.3;
+      });
+    }
+
+    if (reduce.matches) {
+      update(0);
+      renderer.render(scene, camera);
+      addEventListener("resize", () => { update(0); renderer.render(scene, camera); });
+      return;
+    }
+
+    // Render on every display frame (no fixed cap: a cap that does not divide the refresh rate
+    // causes uneven frame pacing, which reads as stutter). Phones render every other frame.
+    let last = 0, frame = 0, running = true;
+    document.addEventListener("visibilitychange", () => { running = !document.hidden; last = 0; });
+    renderer.setAnimationLoop((now) => {
+      if (!running) return;
+      const dt = last ? Math.min((now - last) / 1000, 0.1) : 1 / 60;
+      last = now;
+      frame++;
+      update(dt);
+      if (lite && frame % 2) return;
+      renderer.render(scene, camera);
+    });
+  }
+
+  try { init(); } catch (e) { console.warn("3D background disabled:", e); canvas.remove(); }
+</script>
+
+</body>
+</html>

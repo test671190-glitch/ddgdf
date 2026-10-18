@@ -1,0 +1,11 @@
+# Netlify: публикуется только документация API (папка docs/dist).
+# Ручной деплой: перетащите папку docs/dist на https://app.netlify.com/drop
+[build]
+  command = "python scripts/build_docs.py"
+  publish = "docs/dist"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

@@ -1,0 +1,5 @@
+# Переводы строк всегда LF: скрипты deploy/*.sh с CRLF не запустятся на сервере
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

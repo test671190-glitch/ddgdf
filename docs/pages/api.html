@@ -1,0 +1,875 @@
+<title>unknown shop API</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Документация API unknown shop: подключение, эндпоинты, 49 моделей, ошибки и лимиты.">
+<!-- @include partials/style.html -->
+
+<!-- @include partials/background.html -->
+
+<!-- @header api -->
+
+<section class="hero" id="overview">
+  <div class="eyebrow glass"><span class="dot"></span>API v1 · OpenAI + Anthropic</div>
+  <h1><span class="redact">unknown</span> shop <span class="api">API</span></h1>
+  <p class="lead">Один ключ открывает 49 моделей для текста, изображений и видео. Совместим с OpenAI и Anthropic SDK, поэтому подключается к Cursor, Claude Code, Cline и вашим скриптам за минуту.</p>
+  <div class="hero-row">
+    <div class="base-url glass"><span>Base URL</span><code id="base-url">https://154-83-140-29.sslip.io/v1</code><button class="chip-btn" type="button" data-copy="https://154-83-140-29.sslip.io/v1">Копировать</button></div>
+    <a class="pill-btn ghost" href="#quickstart">Быстрый старт →</a>
+  </div>
+  <div class="stats" aria-label="Количество моделей">
+    <div class="stat glass t"><b>32</b><span>текстовые</span></div>
+    <div class="stat glass i"><b>8</b><span>изображения</span></div>
+    <div class="stat glass v"><b>9</b><span>видео</span></div>
+  </div>
+</section>
+
+<div class="shell">
+  <nav class="toc glass" aria-label="Разделы">
+    <div class="toc-group">
+      <div class="toc-label">Начало</div>
+      <a href="#key">Как получить ключ</a>
+      <a href="#auth">Аутентификация</a>
+      <a href="#quickstart">Быстрый старт</a>
+      <a href="#ide">Подключение к IDE</a>
+    </div>
+    <div class="toc-group">
+      <div class="toc-label">Эндпоинты</div>
+      <a href="#chat">Chat Completions</a>
+      <a href="#streaming">Стриминг</a>
+      <a href="#messages">Anthropic Messages</a>
+      <a href="#models">Модели</a>
+      <a href="#images">Изображения</a>
+      <a href="#videos">Видео</a>
+    </div>
+    <div class="toc-group">
+      <div class="toc-label">Справка</div>
+      <a href="#errors">Ошибки</a>
+      <a href="#limits">Лимиты и тарифы</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="sheet glass" id="key">
+      <span class="kicker">Шаг 0</span>
+      <h2>Как получить ключ</h2>
+      <ol class="steps">
+        <li>Откройте Telegram-бот <a href="https://t.me/UnknownAiShopBot" target="_blank" rel="noopener">unknown shop</a> и выберите тариф Pro или Unlimited.</li>
+        <li>Оплатите в Telegram Stars или криптой через @CryptoBot. Ключ придёт сразу после оплаты.</li>
+        <li>Ключ, тариф и срок действия всегда под рукой в боте по команде <code>/profile</code>.</li>
+      </ol>
+      <p class="prose">Если ключ попал в чужие руки, откройте в боте «Профиль» → «Перевыпустить ключ»: старый ключ сразу перестанет работать, а вы получите новый.</p>
+    </section>
+
+    <section class="sheet glass" id="auth">
+      <span class="kicker">Безопасность</span>
+      <h2>Аутентификация</h2>
+      <p class="prose">Передавайте ключ в заголовке <code>Authorization</code>. Для Anthropic SDK подойдёт и заголовок <code>x-api-key</code>.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>http</span></div>
+        <pre>Authorization: Bearer YOUR_API_KEY</pre>
+      </div>
+      <p class="note"><strong>Держите ключ в секрете.</strong> Храните его в переменной окружения и не вставляйте в код, который уходит в браузер или в публичный репозиторий.</p>
+    </section>
+
+    <section class="sheet glass" id="quickstart">
+      <span class="kicker">60 секунд</span>
+      <h2>Быстрый старт</h2>
+      <p class="prose">Подойдёт любой OpenAI SDK, достаточно указать другой base URL. В примерах ключ берётся из переменной <code>UNKNOWN_SHOP_API_KEY</code>.</p>
+      <div class="segmented" role="tablist" aria-label="Язык примера">
+        <span class="thumb" aria-hidden="true"></span>
+        <button role="tab" id="tab-curl" aria-controls="panel-curl" aria-selected="true">curl</button>
+        <button role="tab" id="tab-py" aria-controls="panel-py" aria-selected="false">Python</button>
+        <button role="tab" id="tab-js" aria-controls="panel-js" aria-selected="false">JavaScript</button>
+      </div>
+      <div class="code" role="tabpanel" id="panel-curl" aria-labelledby="tab-curl">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/chat/completions \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-6-astra",
+    "messages": [
+      {"role": "user", "content": "Объясни, что такое REST, в двух предложениях"}
+    ]
+  }'</pre>
+      </div>
+      <div class="code" role="tabpanel" id="panel-py" aria-labelledby="tab-py" hidden>
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>python · pip install openai</span></div>
+        <pre>import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://154-83-140-29.sslip.io/v1",
+    api_key=os.environ["UNKNOWN_SHOP_API_KEY"],
+)
+
+response = client.chat.completions.create(
+    model="gpt-6-astra",
+    messages=[{"role": "user", "content": "Объясни, что такое REST, в двух предложениях"}],
+)
+print(response.choices[0].message.content)</pre>
+      </div>
+      <div class="code" role="tabpanel" id="panel-js" aria-labelledby="tab-js" hidden>
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>javascript · npm install openai</span></div>
+        <pre>import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://154-83-140-29.sslip.io/v1",
+  apiKey: process.env.UNKNOWN_SHOP_API_KEY,
+});
+
+const response = await client.chat.completions.create({
+  model: "gpt-6-astra",
+  messages: [{ role: "user", content: "Объясни, что такое REST, в двух предложениях" }],
+});
+console.log(response.choices[0].message.content);</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="ide">
+      <span class="kicker">Интеграции</span>
+      <h2>Подключение к IDE</h2>
+      <p class="prose">Любой инструмент, который работает с OpenAI- или Anthropic-провайдером, подключается тремя значениями: base URL, ключ и ID модели. Для кода хорошо подходят <code>claude-opus-5-5</code>, <code>claude-fable-5-1</code>, <code>gpt-6-astra</code>, <code>gpt-5.6-sol</code> и <code>gemini-3.8-flash</code>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Инструмент</th><th>Протокол</th><th>Base URL</th></tr></thead>
+          <tbody>
+            <tr><td>Claude Code</td><td>Anthropic</td><td><code>https://154-83-140-29.sslip.io</code></td></tr>
+            <tr><td>Cursor</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Cline, Roo Code, Kilo Code</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Antigravity</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Codex CLI</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>Continue, Zed, JetBrains</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+            <tr><td>OpenCode, Aider</td><td>OpenAI</td><td><code>https://154-83-140-29.sslip.io/v1</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note"><strong>Протокол Anthropic</strong> использует base URL без <code>/v1</code>. Все остальные инструменты используют адрес с <code>/v1</code>.</p>
+
+      <details class="tool" open>
+        <summary>Claude Code <span class="proto">ANTHROPIC</span></summary>
+        <div class="body">
+          <p>Задайте переменные окружения и запустите <code>claude</code>. Если раньше вы входили через аккаунт Anthropic, сначала выполните <code>/logout</code>, иначе запросы пойдут мимо ключа.</p>
+          <div class="code">
+            <div class="code-head"><span>macOS / Linux</span></div>
+            <pre>export ANTHROPIC_BASE_URL="https://154-83-140-29.sslip.io"
+export ANTHROPIC_AUTH_TOKEN="YOUR_API_KEY"
+export ANTHROPIC_MODEL="claude-opus-5-5"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="claude-opus-5-5"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-5.5"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="claude-haiku-5.5"
+claude</pre>
+          </div>
+          <div class="code">
+            <div class="code-head"><span>Windows PowerShell</span></div>
+            <pre>$env:ANTHROPIC_BASE_URL = "https://154-83-140-29.sslip.io"
+$env:ANTHROPIC_AUTH_TOKEN = "YOUR_API_KEY"
+$env:ANTHROPIC_MODEL = "claude-opus-5-5"
+claude</pre>
+          </div>
+          <p>Чтобы не задавать переменные каждый раз, добавьте их в <code>~/.claude/settings.json</code>. Эти настройки подхватывают и расширения Claude Code для VS Code и JetBrains.</p>
+          <div class="code">
+            <div class="code-head"><span>~/.claude/settings.json</span></div>
+            <pre>{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://154-83-140-29.sslip.io",
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_API_KEY",
+    "ANTHROPIC_MODEL": "claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5.5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5.5"
+  }
+}</pre>
+          </div>
+          <p>Команда <code>/status</code> покажет текущий base URL, <code>/model</code> переключит модель. Вместо Claude можно указать любую текстовую модель, например <code>gpt-6-astra</code>.</p>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Cursor <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <ol>
+            <li>Откройте Cursor Settings → Models (<code>Ctrl+Shift+J</code>, на macOS <code>Cmd+Shift+J</code>).</li>
+            <li>В блоке API Keys вставьте ключ в поле OpenAI API Key.</li>
+            <li>Включите Override OpenAI Base URL и укажите <code>https://154-83-140-29.sslip.io/v1</code>.</li>
+            <li>Нажмите Add Custom Model и введите ID модели, например <code>claude-opus-5-5</code>.</li>
+            <li>Выберите модель в чате или в режиме Agent.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Cline, Roo Code, Kilo Code <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <ol>
+            <li>Откройте настройки расширения (шестерёнка в его панели).</li>
+            <li>API Provider: <code>OpenAI Compatible</code>.</li>
+            <li>Base URL: <code>https://154-83-140-29.sslip.io/v1</code>, API Key: ваш ключ.</li>
+            <li>Model ID: <code>claude-opus-5-5</code> или любая другая модель.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Antigravity <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Antigravity построен на VS Code, поэтому подключение идёт через расширение.</p>
+          <ol>
+            <li>Установите Kilo Code или Cline из панели Extensions.</li>
+            <li>В настройках расширения выберите провайдера <code>OpenAI Compatible</code>.</li>
+            <li>Укажите base URL <code>https://154-83-140-29.sslip.io/v1</code>, ключ и ID модели.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Codex CLI <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Добавьте провайдера в <code>~/.codex/config.toml</code>, а ключ передайте через переменную окружения.</p>
+          <div class="code">
+            <div class="code-head"><span>~/.codex/config.toml</span></div>
+            <pre>model = "gpt-6-astra"
+model_provider = "unknownshop"
+
+[model_providers.unknownshop]
+name = "unknown shop"
+base_url = "https://154-83-140-29.sslip.io/v1"
+env_key = "UNKNOWN_SHOP_API_KEY"
+wire_api = "chat"</pre>
+          </div>
+          <div class="code">
+            <div class="code-head"><span>bash</span></div>
+            <pre>export UNKNOWN_SHOP_API_KEY="YOUR_API_KEY"
+codex</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Continue <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Расширение для VS Code и JetBrains. Модели описываются в <code>~/.continue/config.yaml</code>.</p>
+          <div class="code">
+            <div class="code-head"><span>~/.continue/config.yaml</span></div>
+            <pre>name: unknown shop
+version: 1.0.0
+schema: v1
+models:
+  - name: Claude Opus 5.5
+    provider: openai
+    model: claude-opus-5-5
+    apiBase: https://154-83-140-29.sslip.io/v1
+    apiKey: YOUR_API_KEY
+    roles: [chat, edit, apply]
+  - name: GPT-6 Astra
+    provider: openai
+    model: gpt-6-astra
+    apiBase: https://154-83-140-29.sslip.io/v1
+    apiKey: YOUR_API_KEY
+    roles: [chat, edit, apply]</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Zed <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Добавьте провайдера в <code>settings.json</code> Zed, а ключ введите в панели Agent → Settings.</p>
+          <div class="code">
+            <div class="code-head"><span>settings.json</span></div>
+            <pre>{
+  "language_models": {
+    "openai_compatible": {
+      "unknown shop": {
+        "api_url": "https://154-83-140-29.sslip.io/v1",
+        "available_models": [
+          { "name": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "max_tokens": 1000000 },
+          { "name": "gpt-6-astra", "display_name": "GPT-6 Astra", "max_tokens": 1000000 }
+        ]
+      }
+    }
+  }
+}</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>JetBrains AI Assistant <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <ol>
+            <li>Откройте Settings → Tools → AI Assistant → Models.</li>
+            <li>В блоке Third-party AI providers выберите <code>OpenAI-compatible</code>.</li>
+            <li>URL: <code>https://154-83-140-29.sslip.io/v1</code>, API Key: ваш ключ, затем Test Connection.</li>
+            <li>Выберите нужную модель в списке моделей чата.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>OpenCode <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <p>Добавьте провайдера в <code>opencode.json</code> и выберите модель командой <code>/models</code>.</p>
+          <div class="code">
+            <div class="code-head"><span>opencode.json</span></div>
+            <pre>{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "unknownshop": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "unknown shop",
+      "options": {
+        "baseURL": "https://154-83-140-29.sslip.io/v1",
+        "apiKey": "{env:UNKNOWN_SHOP_API_KEY}"
+      },
+      "models": {
+        "claude-opus-5-5": { "name": "Claude Opus 5.5" },
+        "gpt-6-astra": { "name": "GPT-6 Astra" }
+      }
+    }
+  }
+}</pre>
+          </div>
+        </div>
+      </details>
+
+      <details class="tool">
+        <summary>Aider <span class="proto">OPENAI</span></summary>
+        <div class="body">
+          <div class="code">
+            <div class="code-head"><span>bash</span></div>
+            <pre>aider --openai-api-base https://154-83-140-29.sslip.io/v1 \
+      --openai-api-key YOUR_API_KEY \
+      --model openai/claude-opus-5-5</pre>
+          </div>
+        </div>
+      </details>
+
+      <h3>Другие программы</h3>
+      <p class="prose">Если в настройках есть пункт OpenAI Compatible, Custom provider или поле Base URL, укажите <code>https://154-83-140-29.sslip.io/v1</code>, ключ и ID модели. Программам на протоколе Anthropic нужен адрес без <code>/v1</code>: <code>https://154-83-140-29.sslip.io</code>.</p>
+    </section>
+
+    <section class="sheet glass" id="chat">
+      <span class="kicker">Текст</span>
+      <h2>Chat Completions</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/chat/completions</span></div>
+      <p class="prose">Диалог с текстовой моделью. Запрос и ответ устроены так же, как в OpenAI.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Параметр</th><th>Тип</th><th>Описание</th></tr></thead>
+          <tbody>
+            <tr><td><code>model</code><span class="req">обязательный</span></td><td>string</td><td>ID модели, например <code>gpt-6-astra</code>. Все ID есть в разделе <a href="#models">Модели</a>.</td></tr>
+            <tr><td><code>messages</code><span class="req">обязательный</span></td><td>array</td><td>Сообщения диалога в виде <code>{ role, content }</code>. Роли: <code>system</code>, <code>user</code>, <code>assistant</code>.</td></tr>
+            <tr><td><code>stream</code></td><td>boolean</td><td>Отдавать ответ по частям через SSE. По умолчанию <code>false</code>.</td></tr>
+            <tr><td><code>reasoning_effort</code></td><td>string</td><td>Глубина рассуждения: <code>none</code>, <code>minimal</code>, <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>. Доступные значения зависят от модели, они указаны в таблице <a href="#models">моделей</a>.</td></tr>
+            <tr><td><code>verbosity</code></td><td>string</td><td>Длина ответа: <code>low</code>, <code>medium</code>, <code>high</code>. Только для моделей OpenAI.</td></tr>
+            <tr><td><code>web_search</code></td><td>boolean</td><td>Перед ответом модель ищет информацию в интернете. Работает у всех текстовых моделей.</td></tr>
+            <tr><td><code>temperature</code></td><td>number</td><td>Учитывается только у моделей GPT с <code>reasoning_effort: none</code>. Claude и Gemini его игнорируют.</td></tr>
+            <tr><td><code>max_tokens</code></td><td>integer</td><td>Предел длины ответа в токенах: до 128 000 у GPT и Claude, до 65 536 у Gemini.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>Ответ · 200</span></div>
+        <pre>{
+  "id": "chatcmpl-8f2c1a",
+  "object": "chat.completion",
+  "created": 1790000000,
+  "model": "gpt-6-astra",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "…" },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": { "prompt_tokens": 18, "completion_tokens": 42, "total_tokens": 60 }
+}</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="streaming">
+      <span class="kicker">SSE</span>
+      <h2>Стриминг</h2>
+      <p class="prose">С параметром <code>"stream": true</code> ответ приходит частями в формате Server-Sent Events. Каждая часть содержит фрагмент текста в <code>delta.content</code>. Поток заканчивается строкой <code>data: [DONE]</code>.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/chat/completions \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -N -d '{"model": "gpt-5.6-sol", "stream": true, "messages": [{"role": "user", "content": "Привет"}]}'</pre>
+      </div>
+      <div class="code">
+        <div class="code-head"><span>text/event-stream</span></div>
+        <pre>data: {"choices":[{"index":0,"delta":{"content":"Прив"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"ет!"}}]}
+
+data: [DONE]</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="messages">
+      <span class="kicker">Anthropic SDK</span>
+      <h2>Anthropic Messages</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/messages</span></div>
+      <p class="prose">Эндпоинт в формате Anthropic Messages API. Через него работают Claude Code и Anthropic SDK. Ключ можно передать в <code>x-api-key</code>.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/messages \
+  -H "x-api-key: $UNKNOWN_SHOP_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-opus-5-5",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Привет!"}]
+  }'</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="models">
+      <span class="kicker">Каталог · 49</span>
+      <h2>Модели</h2>
+      <div class="endpoint"><span class="method get">GET</span><span>/v1/models</span></div>
+      <p class="prose">Возвращает список доступных моделей. В параметре <code>model</code> передавайте значение из колонки ID. Наведите на точку на карте, чтобы увидеть модель, нажмите, чтобы скопировать её ID.</p>
+      <div class="orbit-card">
+        <canvas id="orbit" aria-label="Карта моделей: три орбиты — текст, изображения, видео"></canvas>
+        <div class="orbit-tip glass" id="orbit-tip" hidden></div>
+        <div class="orbit-hint">тяните, чтобы вращать · нажмите точку, чтобы скопировать ID</div>
+      </div>
+      <div class="legend">
+        <button class="chip" type="button" data-filter="all" aria-pressed="true"><i></i>Все</button>
+        <button class="chip" type="button" data-filter="text" aria-pressed="false"><i></i>Текст</button>
+        <button class="chip" type="button" data-filter="image" aria-pressed="false"><i></i>Изображения</button>
+        <button class="chip" type="button" data-filter="video" aria-pressed="false"><i></i>Видео</button>
+        <label for="model-search" hidden>Поиск модели</label>
+        <input class="search" id="model-search" type="search" placeholder="Найти: claude, kling, gemini…" autocomplete="off">
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Модель</th><th>Разработчик</th><th>reasoning_effort</th></tr></thead>
+          <tbody id="models-body"></tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/models \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY"</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="images">
+      <span class="kicker">Генерация</span>
+      <h2>Изображения</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/images/generations</span></div>
+      <p class="prose">Генерирует изображение и возвращает ссылку на готовый файл.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Параметр</th><th>Тип</th><th>Описание</th></tr></thead>
+          <tbody>
+            <tr><td><code>model</code><span class="req">обязательный</span></td><td>string</td><td>ID модели изображений, например <code>nano-banana-pro</code>.</td></tr>
+            <tr><td><code>prompt</code><span class="req">обязательный</span></td><td>string</td><td>Описание изображения.</td></tr>
+            <tr><td><code>aspect_ratio</code></td><td>string</td><td><code>auto</code>, <code>1:1</code>, <code>4:5</code>, <code>9:16</code>, <code>16:9</code>, <code>21:9</code> и другие. Набор зависит от модели.</td></tr>
+            <tr><td><code>resolution</code></td><td>string</td><td><code>0.5K</code>, <code>1K</code>, <code>2K</code>, <code>4K</code>. У FLUX.2 разрешение задаётся в мегапикселях: от <code>0.5MP</code> до <code>4MP</code>.</td></tr>
+            <tr><td><code>quality</code></td><td>string</td><td><code>auto</code>, <code>low</code>, <code>medium</code>, <code>high</code>. Только GPT Image и Grok Imagine.</td></tr>
+            <tr><td><code>n</code></td><td>integer</td><td>Сколько изображений сгенерировать, от 1 до 4.</td></tr>
+            <tr><td><code>images</code></td><td>array</td><td>Референсы или исходные картинки для правки: до 16 у GPT Image, до 14 у Nano Banana, до 5 у Grok.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/images/generations \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nano-banana-pro",
+    "prompt": "Минималистичная обложка альбома, чёрно-белая плёнка",
+    "aspect_ratio": "1:1",
+    "resolution": "4K",
+    "n": 2
+  }'</pre>
+      </div>
+      <div class="code">
+        <div class="code-head"><span>Ответ · 200</span></div>
+        <pre>{
+  "created": 1790000000,
+  "data": [{ "url": "https://…/img_7hc2.png" }]
+}</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="videos">
+      <span class="kicker">Генерация</span>
+      <h2>Видео</h2>
+      <div class="endpoint"><span class="method post">POST</span><span>/v1/videos</span></div>
+      <p class="prose">Видео генерируется асинхронно. Запрос сразу возвращает ID задачи, а статус и ссылку на готовый ролик вы получаете отдельным запросом.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Параметр</th><th>Тип</th><th>Описание</th></tr></thead>
+          <tbody>
+            <tr><td><code>model</code><span class="req">обязательный</span></td><td>string</td><td>ID видеомодели, например <code>kling-3.0</code>.</td></tr>
+            <tr><td><code>prompt</code><span class="req">обязательный</span></td><td>string</td><td>Описание сцены.</td></tr>
+            <tr><td><code>aspect_ratio</code></td><td>string</td><td><code>16:9</code>, <code>9:16</code>, <code>1:1</code> и другие. Набор зависит от модели.</td></tr>
+            <tr><td><code>duration</code></td><td>integer</td><td>Длительность в секундах: Seedance 2.5 от 4 до 30, Kling 3.0 от 3 до 15, Veo 3.1 только 4, 6 или 8.</td></tr>
+            <tr><td><code>resolution</code></td><td>string</td><td><code>360p</code>, <code>480p</code>, <code>720p</code>, <code>1080p</code>, <code>4K</code>. Набор зависит от модели.</td></tr>
+            <tr><td><code>generate_audio</code></td><td>boolean</td><td>Добавить звук. У Veo 3.1 и Gemini Omni звук генерируется всегда.</td></tr>
+            <tr><td><code>images</code></td><td>array</td><td>Первый и последний кадр или референсы. Для Motion Control нужны фото персонажа и видео с движением.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>bash</span></div>
+        <pre>curl https://154-83-140-29.sslip.io/v1/videos \
+  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kling-3.0",
+    "prompt": "Утренний город, медленный пролёт камеры над крышами",
+    "aspect_ratio": "16:9",
+    "duration": 10,
+    "resolution": "1080p"
+  }'</pre>
+      </div>
+      <h3>Статус задачи</h3>
+      <div class="endpoint"><span class="method get">GET</span><span>/v1/videos/{id}</span></div>
+      <p class="prose">Опрашивайте задачу раз в несколько секунд, пока статус не станет <code>completed</code> или <code>failed</code>. Возможные статусы: <code>queued</code>, <code>processing</code>, <code>completed</code>, <code>failed</code>.</p>
+      <div class="code">
+        <div class="code-head"><span>Ответ · 200</span></div>
+        <pre>{
+  "id": "vid_4f9a",
+  "status": "completed",
+  "url": "https://…/vid_4f9a.mp4"
+}</pre>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="errors">
+      <span class="kicker">Справка</span>
+      <h2>Ошибки</h2>
+      <p class="prose">Ошибка возвращается с HTTP-кодом и телом в формате OpenAI. Ориентируйтесь на поле <code>code</code>: оно не меняется, а текст <code>message</code> может уточняться.</p>
+      <div class="code">
+        <div class="code-head"><span><span class="lights"><i></i><i></i><i></i></span>Ответ · 404</span></div>
+        <pre>{
+  "error": {
+    "message": "Модель не найдена",
+    "type": "invalid_request_error",
+    "code": "model_not_found"
+  }
+}</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>HTTP</th><th>code</th><th>Что произошло и что делать</th></tr></thead>
+          <tbody>
+            <tr><td class="num">400</td><td><code>invalid_request</code></td><td>Неверные параметры запроса. Проверьте имена и значения полей.</td></tr>
+            <tr><td class="num">401</td><td><code>invalid_api_key</code></td><td>Ключ не передан или недействителен. Проверьте заголовок и ключ в <code>/profile</code>.</td></tr>
+            <tr><td class="num">402</td><td><code>subscription_required</code></td><td>Нет активного тарифа. Продлите подписку в боте.</td></tr>
+            <tr><td class="num">404</td><td><code>model_not_found</code></td><td>Модели с таким ID нет. Сверьтесь с разделом <a href="#models">Модели</a>.</td></tr>
+            <tr><td class="num">429</td><td><code>plan_limit_reached</code></td><td>Дневной лимит тарифа исчерпан. Доступ вернётся после сброса, время сброса есть в заголовке <code>X-Plan-Reset</code>.</td></tr>
+            <tr><td class="num">500</td><td><code>server_error</code></td><td>Внутренняя ошибка. Повторите запрос через несколько секунд.</td></tr>
+            <tr><td class="num">502</td><td><code>upstream_error</code></td><td>Сервис моделей временно не отвечает. Повторите запрос.</td></tr>
+            <tr><td class="num">503</td><td><code>key_pending</code></td><td>Подписка оплачена, доступ ещё готовится. Бот пришлёт уведомление, когда всё будет готово.</td></tr>
+            <tr><td class="num">503</td><td><code>provider_key_error</code></td><td>Временная проблема на нашей стороне, мы уже получили уведомление. Если ошибка не пропадает, напишите в поддержку.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="sheet glass" id="limits">
+      <span class="kicker">Тарифы</span>
+      <h2>Лимиты и тарифы</h2>
+      <p class="prose">Отдельного ограничения на число запросов в минуту нет. Объём работы зависит только от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
+<!-- @plans -->
+      <p class="prose">Остаток по тарифу приходит в заголовках каждого ответа:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Заголовок</th><th>Значение</th></tr></thead>
+          <tbody>
+            <tr><td><code>X-Plan-Limit</code></td><td>Дневной лимит тарифа.</td></tr>
+            <tr><td><code>X-Plan-Remaining</code></td><td>Сколько осталось до сброса.</td></tr>
+            <tr><td><code>X-Plan-Reset</code></td><td>Когда лимит обновится.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="prose">Когда дневной лимит заканчивается, API отвечает кодом <code>429</code> с <code>code: plan_limit_reached</code>.</p>
+    </section>
+  </main>
+</div>
+
+<!-- @include partials/footer.html -->
+
+<!-- @include partials/common.html -->
+
+<script>
+  // Model catalog: table + pseudo-3D orbit map (2D canvas, three tilted rings)
+  (function () {
+    var A = "none low medium high xhigh max";
+    var B = "low medium high xhigh max";
+    var C = "low medium high";
+    var D = "minimal low medium high";
+    // [id, name, type, vendor, reasoning levels, default]
+    var MODELS = [
+      ["gpt-6-astra", "GPT-6 Astra", "text", "OpenAI", B, "medium"],
+      ["gpt-6-sol", "GPT-6 Sol", "text", "OpenAI", A, "medium"],
+      ["gpt-6-luna", "GPT-6 Luna", "text", "OpenAI", A, "medium"],
+      ["gpt-6-astra-pro", "GPT-6 Astra Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-6-sol-pro", "GPT-6 Sol Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-6-luna-pro", "GPT-6 Luna Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-6.1-sol", "GPT-6.1 Sol", "text", "OpenAI", A, "medium"],
+      ["gpt-6.1-sol-pro", "GPT-6.1 Sol Pro", "text", "OpenAI", A, "medium"],
+      ["gpt-5.6-sol", "GPT-5.6 Sol", "text", "OpenAI", A, "medium"],
+      ["gpt-5.6-terra", "GPT-5.6 Terra", "text", "OpenAI", A, "medium"],
+      ["gpt-5.6-luna", "GPT-5.6 Luna", "text", "OpenAI", A, "medium"],
+      ["claude-opus-5-5", "Claude Opus 5.5", "text", "Anthropic", B, "medium"],
+      ["claude-fable-5-1", "Claude Fable 5.1", "text", "Anthropic", B, "high"],
+      ["claude-sonnet-5.5", "Claude Sonnet 5.5", "text", "Anthropic", B, "medium"],
+      ["claude-haiku-5.5", "Claude Haiku 5.5", "text", "Anthropic", B, "medium"],
+      ["claude-opus-5", "Claude Opus 5", "text", "Anthropic", A, "high"],
+      ["claude-fable-5", "Claude Fable 5", "text", "Anthropic", B, "high"],
+      ["claude-opus-4-8", "Claude Opus 4.8", "text", "Anthropic", A, "none"],
+      ["gemini-4-argon", "Gemini 4 Argon", "text", "Google", C, "medium"],
+      ["gemini-3.8-flash", "Gemini 3.8 Flash", "text", "Google", C, "medium"],
+      ["gemini-3.7-flash", "Gemini 3.7 Flash", "text", "Google", C, "medium"],
+      ["gemini-3.6-flash", "Gemini 3.6 Flash", "text", "Google", D, "medium"],
+      ["gemini-3.1-pro-preview", "Gemini 3.1 Pro", "text", "Google", C, "high"],
+      ["grok-4.7", "Grok 4.7", "text", "xAI", C, "medium"],
+      ["qwen3.8-max-prime", "Qwen3.8 Max Prime", "text", "Qwen", C, "medium"],
+      ["qwen3.8-max-0902", "Qwen3.8 Max (0902)", "text", "Qwen", C, "medium"],
+      ["qwen3.8-omni-flash", "Qwen3.8 Omni Flash", "text", "Qwen", C, "medium"],
+      ["glm-5.3-prime", "GLM 5.3 Prime", "text", "Z.ai", C, "medium"],
+      ["glm-5.3-flashx", "GLM 5.3 FlashX", "text", "Z.ai", C, "medium"],
+      ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", "text", "DeepSeek", C, "medium"],
+      ["deepseek-v4.1-flash-1017", "DeepSeek V4.1 Flash 1017", "text", "DeepSeek", C, "medium"],
+      ["mistral-large-4-0", "Mistral Large 4", "text", "Mistral", C, "medium"],
+      ["nano-banana-pro", "Nano Banana Pro", "image", "Google"],
+      ["nano-banana-2", "Nano Banana 2", "image", "Google"],
+      ["gpt-image-2.5", "GPT Image 2.5", "image", "OpenAI"],
+      ["gpt-image-2", "GPT Image 2", "image", "OpenAI"],
+      ["grok-imagine-image-2.0", "Grok Imagine Image 2.0", "image", "xAI"],
+      ["seedream-5.0-pro", "Seedream 5.0 Pro", "image", "ByteDance"],
+      ["recraft-v4.1", "Recraft V4.1", "image", "Recraft"],
+      ["flux-2", "FLUX.2", "image", "Black Forest Labs"],
+      ["seedance-2.5", "Seedance 2.5", "video", "ByteDance"],
+      ["seedance-2.0", "Seedance 2.0", "video", "ByteDance"],
+      ["veo-3.1", "Veo 3.1", "video", "Google"],
+      ["gemini-omni-flash-1.1", "Gemini Omni Flash 1.1", "video", "Google"],
+      ["pixverse-v6", "PixVerse V6", "video", "PixVerse"],
+      ["kling-3.0", "Kling 3.0", "video", "Kuaishou"],
+      ["kling-2.6", "Kling 2.6", "video", "Kuaishou"],
+      ["kling-3.0-motion-control", "Kling 3.0 Motion Control", "video", "Kuaishou"],
+      ["kling-2.6-motion-control", "Kling 2.6 Motion Control", "video", "Kuaishou"]
+    ];
+    var TYPE_LABEL = { image: "изображения", video: "видео" };
+    var TYPE_VAR = { text: "--signal", image: "--cool", video: "--gold" };
+    var copyText = window.__copyText;
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    // ---------- table ----------
+    var body = document.getElementById("models-body");
+    var search = document.getElementById("model-search");
+    var chips = Array.prototype.slice.call(document.querySelectorAll(".legend .chip"));
+    var filter = "all";
+
+    function levels(m) {
+      if (m[2] !== "text") return '<span class="lvl">' + TYPE_LABEL[m[2]] + "</span>";
+      return '<span class="lvl">' + m[4].split(" ").map(function (l) { return l === m[5] ? "<b>" + l + "</b>" : l; }).join(" ") + "</span>";
+    }
+    function render() {
+      var q = (search.value || "").trim().toLowerCase();
+      var rows = MODELS.filter(function (m) {
+        if (filter !== "all" && m[2] !== filter) return false;
+        return !q || (m[0] + " " + m[1] + " " + m[3]).toLowerCase().indexOf(q) !== -1;
+      });
+      if (!rows.length) {
+        body.innerHTML = '<tr class="empty-row"><td colspan="4">Ничего не найдено. Попробуйте другое название или сбросьте фильтр.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map(function (m) {
+        return '<tr><td><span class="type-dot" style="background:var(' + TYPE_VAR[m[2]] + ')"></span><button class="id-btn" type="button" title="Скопировать ID" data-id="' + m[0] + '">' + m[0] +
+          "</button></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
+      }).join("");
+    }
+    body.addEventListener("click", function (e) {
+      var btn = e.target.closest(".id-btn");
+      if (btn) copyText(btn.dataset.id, btn);
+    });
+    search.addEventListener("input", render);
+    function setFilter(f) {
+      filter = f;
+      chips.forEach(function (c) { c.setAttribute("aria-pressed", c.dataset.filter === f ? "true" : "false"); });
+      render();
+    }
+    chips.forEach(function (chip) { chip.addEventListener("click", function () { setFilter(chip.dataset.filter); }); });
+    render();
+
+    // ---------- orbit map ----------
+    var canvas = document.getElementById("orbit");
+    var tip = document.getElementById("orbit-tip");
+    var ctx = canvas.getContext("2d");
+    var RINGS = { text: 1, image: 0.64, video: 0.38 };
+    var SPEED = { text: 0.05, image: -0.08, video: 0.12 };
+    var points = MODELS.map(function (m) {
+      var same = MODELS.filter(function (x) { return x[2] === m[2]; });
+      return { m: m, ring: m[2], base: (same.indexOf(m) / same.length) * Math.PI * 2 };
+    });
+    var colors = {};
+    var W = 0, H = 0, dpr = 1, t = 0, spin = 0, tilt = 0.32, drag = null, hovered = null, visible = true, last = 0;
+
+    function readColors() {
+      var cs = getComputedStyle(document.documentElement);
+      colors.text = cs.getPropertyValue("--signal").trim();
+      colors.image = cs.getPropertyValue("--cool").trim();
+      colors.video = cs.getPropertyValue("--gold").trim();
+      colors.ink = cs.getPropertyValue("--ink").trim();
+      colors.muted = cs.getPropertyValue("--muted").trim();
+      colors.line = cs.getPropertyValue("--line").trim();
+    }
+    // Pre-rendered soft dots: drawing a cached sprite is far cheaper than canvas shadowBlur per dot,
+    // which is what made the animation stutter.
+    var sprites = {};
+    function makeSprites() {
+      ["text", "image", "video"].forEach(function (ring) {
+        var c = document.createElement("canvas");
+        c.width = c.height = 64;
+        var g = c.getContext("2d");
+        var grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+        grad.addColorStop(0, "#ffffff");
+        grad.addColorStop(0.18, colors[ring]);
+        grad.addColorStop(0.32, colors[ring]);
+        grad.addColorStop(0.42, "rgba(0,0,0,0)");
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 64, 64);
+        var halo = g.createRadialGradient(32, 32, 8, 32, 32, 32);
+        halo.addColorStop(0, colors[ring]);
+        halo.addColorStop(1, "rgba(0,0,0,0)");
+        g.globalAlpha = 0.35;
+        g.fillStyle = halo;
+        g.fillRect(0, 0, 64, 64);
+        sprites[ring] = c;
+      });
+    }
+    function resize() {
+      // layout size, not getBoundingClientRect: the section may be mid scroll-animation (scaled)
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function ringTiltOf(ring) {
+      return Math.max(0.05, tilt + (ring === "image" ? 0.08 : ring === "video" ? -0.06 : 0));
+    }
+    function project(p) {
+      var R = Math.min(W * 0.44, H * 1.05) * RINGS[p.ring];
+      var a = p.base + spin + t * SPEED[p.ring];
+      var x = Math.cos(a) * R, z = Math.sin(a) * R;
+      var y = z * ringTiltOf(p.ring);
+      var depth = (Math.sin(a) + 1) / 2; // 0 = back, 1 = front
+      return { x: W / 2 + x, y: H / 2 + y, depth: depth };
+    }
+    function drawRing(ring) {
+      var R = Math.min(W * 0.44, H * 1.05) * RINGS[ring];
+      ctx.beginPath();
+      ctx.ellipse(W / 2, H / 2, R, Math.max(1, R * ringTiltOf(ring)), 0, 0, Math.PI * 2);
+      ctx.strokeStyle = colors[ring];
+      ctx.globalAlpha = filter === "all" || filter === ring ? 0.35 : 0.08;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      // core
+      var g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, 70);
+      g.addColorStop(0, colors.text);
+      g.addColorStop(1, "transparent");
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(W / 2, H / 2, 70, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ["text", "image", "video"].forEach(drawRing);
+      var projected = points.map(function (p) { var q = project(p); q.p = p; return q; });
+      projected.sort(function (a, b) { return a.depth - b.depth; });
+      projected.forEach(function (q) {
+        var on = filter === "all" || filter === q.p.ring;
+        var r = (3 + q.depth * 4.5) * (q.p === hovered ? 1.7 : 1);
+        var size = r * 6; // sprite core is ~1/3 of its width
+        ctx.globalAlpha = on ? 0.35 + q.depth * 0.65 : 0.08;
+        ctx.drawImage(sprites[q.p.ring], q.x - size / 2, q.y - size / 2, size, size);
+        q.p.sx = q.x; q.p.sy = q.y; q.p.r = r; q.p.on = on;
+      });
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = colors.ink;
+      ctx.font = "800 30px Unbounded, Golos Text, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(filter === "all" ? MODELS.length : MODELS.filter(function (m) { return m[2] === filter; }).length), W / 2, H / 2 - 4);
+      ctx.font = "600 10px JetBrains Mono, monospace";
+      ctx.fillStyle = colors.muted;
+      ctx.fillText(filter === "all" ? "МОДЕЛЕЙ" : { text: "ТЕКСТ", image: "КАРТИНКИ", video: "ВИДЕО" }[filter], W / 2, H / 2 + 20);
+    }
+    function frame(now) {
+      if (!visible || document.hidden) { last = 0; requestAnimationFrame(frame); return; }
+      var dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
+      last = now;
+      if (!reduce.matches && !drag) t += dt;
+      draw();
+      requestAnimationFrame(frame);
+    }
+    function pick(e) {
+      var r = canvas.getBoundingClientRect();
+      // convert screen px to layout px (the section can be scaled by its scroll animation)
+      var x = (e.clientX - r.left) * (W / r.width), y = (e.clientY - r.top) * (H / r.height), best = null, bestD = 16;
+      points.forEach(function (p) {
+        if (!p.on || p.sx == null) return;
+        var d = Math.hypot(p.sx - x, p.sy - y);
+        if (d < bestD) { bestD = d; best = p; }
+      });
+      return best;
+    }
+    canvas.addEventListener("pointermove", function (e) {
+      if (drag) {
+        spin += (e.clientX - drag.x) * 0.006;
+        tilt = Math.max(0.08, Math.min(0.62, tilt + (e.clientY - drag.y) * 0.002));
+        drag = { x: e.clientX, y: e.clientY, moved: true };
+        if (reduce.matches) draw();
+        return;
+      }
+      hovered = pick(e);
+      if (hovered) {
+        tip.hidden = false;
+        tip.innerHTML = "<b>" + hovered.m[1] + "</b><code>" + hovered.m[0] + "</code>";
+        tip.style.left = hovered.sx + "px";
+        tip.style.top = hovered.sy + "px";
+        canvas.style.cursor = "copy";
+      } else {
+        tip.hidden = true;
+        canvas.style.cursor = "grab";
+      }
+      if (reduce.matches) draw();
+    });
+    canvas.addEventListener("pointerleave", function () { hovered = null; tip.hidden = true; drag = null; });
+    canvas.addEventListener("pointercancel", function () { drag = null; });
+    canvas.addEventListener("pointerdown", function (e) { drag = { x: e.clientX, y: e.clientY, moved: false }; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener("pointerup", function (e) {
+      var wasDrag = drag && drag.moved;
+      drag = null;
+      if (wasDrag) return;
+      var p = pick(e);
+      if (p) copyText(p.m[0], null);
+    });
+
+    readColors();
+    makeSprites();
+    resize();
+    draw();
+    window.addEventListener("resize", function () { resize(); draw(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw);
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) { visible = entries[0].isIntersecting; }).observe(canvas);
+    }
+    requestAnimationFrame(frame);
+  })();
+</script>
+
+<!-- @include partials/scene.html -->

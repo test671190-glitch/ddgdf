@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>unknown shop — 49 нейросетей в одном чате и API</title>
+  <meta name="description" content="GPT-6, Claude, Gemini, Nano Banana, Veo, Kling и другие нейросети для текста, изображений и видео в одном чате и через один API-ключ.">
+  <meta name="theme-color" content="#050506">
+  <meta property="og:title" content="unknown shop — 49 нейросетей в одном чате">
+  <meta property="og:description" content="Текст, изображения и видео: все модели в одной подписке и через OpenAI-совместимый API.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Unbounded:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/assets/css/base.css">
+  <link rel="stylesheet" href="/assets/css/landing.css">
+  <script>document.documentElement.classList.add("js");</script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js" defer></script>
+  <script type="module" src="/assets/js/landing.js"></script>
+</head>
+<body class="landing grain">
+  <a class="skip-link" href="#main">Перейти к содержимому</a>
+
+  <header class="site-header" id="site-header">
+    <div class="container header-inner">
+      <a class="wordmark" href="/" aria-label="unknown shop — на главную"><span class="redact">unknown</span>shop</a>
+
+      <nav class="nav" id="site-nav" aria-label="Разделы">
+        <a href="#models">Модели</a>
+        <a href="#features">Возможности</a>
+        <a href="#pricing">Тарифы</a>
+        <a href="#api">API</a>
+        <a href="#faq">FAQ</a>
+        <button type="button" class="nav-login btn btn-ghost btn-block" data-action="login">Войти</button>
+      </nav>
+
+      <div class="header-actions" id="header-actions">
+        <div class="guest-actions" id="guest-actions">
+          <button type="button" class="btn btn-quiet btn-sm btn-login" data-action="login">Войти</button>
+          <a class="btn btn-light btn-sm" href="/app">Начать</a>
+        </div>
+        <div class="user-actions" id="user-actions" hidden>
+          <span class="user-chip" id="user-chip"><span class="avatar" id="user-avatar" aria-hidden="true">U</span><span class="user-name" id="user-name"></span></span>
+          <a class="btn btn-light btn-sm" href="/app">Открыть чат</a>
+        </div>
+        <button type="button" class="icon-btn burger" id="burger" aria-label="Меню" aria-expanded="false" aria-controls="site-nav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path class="b1" d="M4 8h16"/><path class="b2" d="M4 16h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ============ HERO ============ -->
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-bg" aria-hidden="true">
+        <span class="hero-orb"></span>
+        <span class="hero-ring r1"></span>
+        <span class="hero-ring r2"></span>
+      </div>
+      <canvas class="hero-canvas" id="hero-canvas" aria-hidden="true"></canvas>
+      <div class="hero-vignette" aria-hidden="true"></div>
+
+      <div class="container hero-inner">
+        <div class="hero-head" id="hero-head">
+          <a class="hero-badge" href="#models"><span class="live-dot" aria-hidden="true"></span><span><b data-total-models>49</b> моделей · текст, изображения, видео</span></a>
+          <h1 class="hero-title" id="hero-title">Чем займёмся <span class="accent-text">сегодня?</span></h1>
+          <p class="hero-sub">GPT-6, Claude Opus, Gemini, Nano Banana, Veo и ещё четыре десятка нейросетей в одном окне. Пишите код и тексты, рисуйте картинки до&nbsp;4K и собирайте видео со звуком.</p>
+        </div>
+
+        <form class="prompt glow-border" id="hero-prompt" autocomplete="off">
+          <label class="sr-only" for="hero-text">Ваш запрос</label>
+          <textarea id="hero-text" rows="2" placeholder="Спросите что угодно или опишите картинку…" enterkeyhint="send"></textarea>
+          <div class="prompt-bar">
+            <div class="prompt-tools" id="hero-tools">
+              <button type="button" class="icon-btn" id="hero-attach" aria-label="Прикрепить файл">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <span class="pill pill-static" id="hero-model-placeholder"><span class="type-dot" data-type="text"></span><span class="pill-value">Claude Opus 5.5</span></span>
+            </div>
+            <button type="submit" class="send-btn" aria-label="Отправить">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+            </button>
+          </div>
+        </form>
+
+        <div class="hero-chips" id="hero-chips" aria-label="Примеры запросов">
+          <button type="button" class="chip" data-model="claude-opus-5-5" data-text="Напиши Telegram-бота на Python с aiogram 3: команда /start, меню из трёх кнопок и ответы на каждую."><span class="chip-ico" aria-hidden="true">💻</span>Бот на Python</button>
+          <button type="button" class="chip" data-model="nano-banana-pro" data-text="Постер в стиле ретрофутуризма: неоновый город на закате, хромированные буквы, мягкое зерно плёнки."><span class="chip-ico" aria-hidden="true">🎨</span>Ретро-постер</button>
+          <button type="button" class="chip" data-model="veo-3.1" data-text="Кинематографичный пролёт дрона над скалистым берегом океана на рассвете, слышен шум волн."><span class="chip-ico" aria-hidden="true">🎬</span>Видео с дрона</button>
+          <button type="button" class="chip" data-model="gpt-6-sol" data-text="Разбери мою идею стартапа: сильные и слабые стороны, главные риски и первые три шага. Идея: "><span class="chip-ico" aria-hidden="true">📊</span>Разбор идеи</button>
+        </div>
+        <p class="hero-note">Enter — отправить, Shift+Enter — новая строка. Продолжим в чате, история хранится только в вашем браузере.</p>
+      </div>
+
+      <a class="scroll-hint" href="#marquee" aria-label="Листать вниз"><span></span></a>
+    </section>
+
+    <!-- ============ MARQUEE ============ -->
+    <section class="marquee" id="marquee" aria-label="Все модели">
+      <div class="marquee-row" id="marquee-a"></div>
+      <div class="marquee-row reverse" id="marquee-b"></div>
+    </section>
+
+    <!-- ============ MODELS ============ -->
+    <section class="section" id="models" aria-labelledby="models-title">
+      <div class="container">
+        <header class="section-head" data-reveal>
+          <span class="eyebrow">Модели</span>
+          <h2 id="models-title">Вся линейка нейросетей <span class="accent-text">в&nbsp;одной подписке</span></h2>
+          <p>Флагманы OpenAI, Anthropic и Google рядом с быстрыми моделями для повседневных задач. Переключайтесь между ними прямо в диалоге.</p>
+        </header>
+
+        <div class="stats" data-reveal-stagger>
+          <div class="stat"><b data-count="49" data-total-models>49</b><span>моделей всего</span></div>
+          <div class="stat"><b data-count="32" data-count-type="text">32</b><span><i class="type-dot" data-type="text"></i>текстовых</span></div>
+          <div class="stat"><b data-count="8" data-count-type="image">8</b><span><i class="type-dot" data-type="image"></i>для изображений</span></div>
+          <div class="stat"><b data-count="9" data-count-type="video">9</b><span><i class="type-dot" data-type="video"></i>для видео</span></div>
+        </div>
+
+        <div class="galaxy" id="galaxy" data-reveal>
+          <div class="galaxy-head">
+            <div>
+              <h3>Галактика моделей</h3>
+              <p id="galaxy-hint">Наведите на точку, чтобы увидеть модель. Клик отфильтрует список ниже.</p>
+            </div>
+            <div class="seg" role="group" aria-label="Группировка точек">
+              <button type="button" aria-pressed="true" data-mode="type">По типу</button>
+              <button type="button" aria-pressed="false" data-mode="vendor">По вендору</button>
+            </div>
+          </div>
+          <div class="galaxy-stage" id="galaxy-stage" aria-describedby="galaxy-hint">
+            <div class="galaxy-fallback" id="galaxy-fallback">
+              <span class="gf-core" aria-hidden="true"></span>
+              <span class="gf-ring g1" aria-hidden="true"></span>
+              <span class="gf-ring g2" aria-hidden="true"></span>
+              <span class="gf-ring g3" aria-hidden="true"></span>
+              <p class="gf-note">Загружаем 3D-сцену…</p>
+            </div>
+          </div>
+          <div class="galaxy-legend" id="galaxy-legend" aria-label="Фильтр по типу">
+            <button type="button" class="legend-btn" data-type="text"><i class="type-dot" data-type="text"></i>Текст <b data-legend-count="text">32</b></button>
+            <button type="button" class="legend-btn" data-type="image"><i class="type-dot" data-type="image"></i>Изображения <b data-legend-count="image">8</b></button>
+            <button type="button" class="legend-btn" data-type="video"><i class="type-dot" data-type="video"></i>Видео <b data-legend-count="video">9</b></button>
+          </div>
+        </div>
+
+        <div class="models-browser" id="models-browser">
+          <div class="models-toolbar">
+            <div class="tabs" role="tablist" aria-label="Тип моделей" id="model-tabs">
+              <button type="button" class="tab" role="tab" id="tab-text" data-type="text" aria-selected="true" aria-controls="models-panel">Текст <span class="count" data-tab-count="text">32</span></button>
+              <button type="button" class="tab" role="tab" id="tab-image" data-type="image" aria-selected="false" aria-controls="models-panel" tabindex="-1">Изображения <span class="count" data-tab-count="image">8</span></button>
+              <button type="button" class="tab" role="tab" id="tab-video" data-type="video" aria-selected="false" aria-controls="models-panel" tabindex="-1">Видео <span class="count" data-tab-count="video">9</span></button>
+              <span class="tab-ind" aria-hidden="true"></span>
+            </div>
+            <div class="models-search">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <label class="sr-only" for="models-q">Найти модель</label>
+              <input class="input" id="models-q" type="search" placeholder="Найти модель или вендора" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="vendor-filter" id="vendor-filter" hidden></div>
+          <div class="models-grid" id="models-panel" role="tabpanel" aria-labelledby="tab-text" aria-live="polite"></div>
+          <noscript><p class="noscript-note">Список моделей с ID есть в <a href="/docs#models">документации API</a>.</p></noscript>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FEATURES ============ -->
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="container">
+        <header class="section-head" data-reveal>
+          <span class="eyebrow">Возможности</span>
+          <h2 id="features-title">Один инструмент <span class="accent-text">вместо десятка вкладок</span></h2>
+          <p>Текст, картинки и видео в одном интерфейсе. И тот же доступ через API для ваших скриптов и IDE.</p>
+        </header>
+
+        <div class="bento" data-reveal-stagger>
+          <article class="feature w7" data-tilt>
+            <div class="feature-visual">
+              <div class="fx-switch" aria-hidden="true">
+                <div class="fx-switch-pill"><span class="type-dot" data-type="text"></span><span class="fx-switch-window"><span class="fx-switch-name" id="fx-switch-name">Claude Opus 5.5</span></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></div>
+                <div class="fx-bubble user">Сравни два подхода к кэшированию в API</div>
+                <div class="fx-bubble ai" id="fx-switch-answer"><span class="fx-line"></span><span class="fx-line"></span><span class="fx-line short"></span></div>
+              </div>
+            </div>
+            <div class="feature-text">
+              <h3>Все модели в одном чате</h3>
+              <p>Начните с GPT, уточните у Claude, сверьтесь с Gemini. Без новых вкладок и копирования контекста.</p>
+            </div>
+          </article>
+
+          <article class="feature w5" data-tilt>
+            <div class="feature-visual">
+              <div class="fx-ratio" aria-hidden="true">
+                <div class="fx-frame"><span class="fx-sun"></span><span class="fx-hill h1"></span><span class="fx-hill h2"></span><span class="fx-4k">4K</span></div>
+                <div class="fx-ratio-labels"><span>1:1</span><span>4:5</span><span>9:16</span><span>16:9</span></div>
+              </div>
+            </div>
+            <div class="feature-text">
+              <h3>Изображения до 4K</h3>
+              <p>Форматы 1:1, 4:5, 9:16 и 16:9, до четырёх вариантов за раз и правки по референсам.</p>
+            </div>
+          </article>
+
+          <article class="feature w4" data-tilt>
+            <div class="feature-visual">
+              <div class="fx-video" aria-hidden="true">
+                <div class="fx-screen"><span class="fx-play"></span><span class="fx-time">00:30</span><span class="fx-sound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span></div>
+                <div class="fx-wave" id="fx-wave"></div>
+                <div class="fx-track"><span class="clip c1"></span><span class="clip c2"></span><span class="clip c3"></span><span class="fx-playhead"></span></div>
+              </div>
+            </div>
+            <div class="feature-text">
+              <h3>Видео со звуком до 30 секунд</h3>
+              <p>Seedance, Veo, Kling и PixVerse: из текста или первого кадра, в 720p, 1080p и 4K.</p>
+            </div>
+          </article>
+
+          <article class="feature w4" data-tilt>
+            <div class="feature-visual">
+              <div class="fx-paste" aria-hidden="true">
+                <div class="fx-keys"><span class="key k1">Ctrl</span><span class="fx-plus">+</span><span class="key k2">V</span></div>
+                <div class="fx-composer"><span class="fx-thumb"><span></span></span><span class="fx-file">screenshot.png</span><span class="fx-send"></span></div>
+              </div>
+            </div>
+            <div class="feature-text">
+              <h3>Файлы и скриншоты</h3>
+              <p>Перетащите файл или нажмите Ctrl+V: модель увидит скриншот, код или документ.</p>
+            </div>
+          </article>
+
+          <article class="feature w4" data-tilt>
+            <div class="feature-visual">
+              <ul class="fx-history" aria-hidden="true">
+                <li><i class="type-dot" data-type="text"></i><span>Рефакторинг API-клиента</span><time>сейчас</time></li>
+                <li><i class="type-dot" data-type="image"></i><span>Обложка для подкаста</span><time>2 ч</time></li>
+                <li><i class="type-dot" data-type="video"></i><span>Тизер запуска</span><time>вчера</time></li>
+                <li><i class="type-dot" data-type="text"></i><span>План статьи про SSE</span><time>пн</time></li>
+              </ul>
+            </div>
+            <div class="feature-text">
+              <h3>История под рукой</h3>
+              <p>Чаты хранятся в браузере: поиск, фильтры по типу и переименование в один клик.</p>
+            </div>
+          </article>
+
+          <article class="feature w12 feature-api" id="api" data-tilt data-tilt-max="2.5">
+            <div class="feature-text">
+              <span class="eyebrow">API</span>
+              <h3>API для IDE и скриптов</h3>
+              <p>OpenAI-совместимый эндпоинт: подключите Cursor, Cline, Claude Code или свой код. Запросы идут в рамках тарифа, отдельные кредиты не нужны.</p>
+              <div class="api-actions">
+                <a class="btn btn-light" href="/docs">Документация API</a>
+                <span class="api-base"><span>Base URL</span><code id="api-base">https://useitai.top/api/v1</code></span>
+              </div>
+            </div>
+            <div class="fx-terminal" aria-label="Пример запроса через curl">
+              <div class="fx-terminal-head" aria-hidden="true"><i></i><i></i><i></i><span>bash</span></div>
+<pre class="fx-code"><code id="fx-code"><span class="t-cmd">curl</span> <span class="t-url">https://useitai.top/api/v1/chat/completions</span> \
+  <span class="t-flag">-H</span> <span class="t-str">"Authorization: Bearer $UNKNOWN_SHOP_API_KEY"</span> \
+  <span class="t-flag">-d</span> <span class="t-str">'{"model": "claude-opus-5-5", "messages": [...]}'</span></code></pre>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ STEPS ============ -->
+    <section class="section section-steps" id="start" aria-labelledby="steps-title">
+      <div class="container">
+        <header class="section-head" data-reveal>
+          <span class="eyebrow">Как начать</span>
+          <h2 id="steps-title">Три шага <span class="accent-text">до первого ответа</span></h2>
+        </header>
+        <div class="steps">
+          <span class="steps-line" aria-hidden="true"></span>
+          <ol class="steps-list" data-reveal-stagger>
+            <li class="step">
+              <span class="step-num" aria-hidden="true">01</span>
+              <h3>Войдите через Telegram-бот</h3>
+              <p>Подтвердите вход в боте за пару секунд. Без паролей и почты.</p>
+              <a class="step-link" href="https://t.me/dsfklgjfsdkbot" target="_blank" rel="noopener noreferrer" data-bot-link>Открыть бота →</a>
+            </li>
+            <li class="step">
+              <span class="step-num" aria-hidden="true">02</span>
+              <h3>Выберите модель</h3>
+              <p>Текст, изображения или видео: все модели в одном списке с поиском.</p>
+              <div class="step-mini" aria-hidden="true"><span class="mini-pill"><i class="type-dot" data-type="text"></i>GPT-6 Sol</span><span class="mini-pill"><i class="type-dot" data-type="image"></i>FLUX.2</span><span class="mini-pill"><i class="type-dot" data-type="video"></i>Kling 3.0</span></div>
+            </li>
+            <li class="step">
+              <span class="step-num" aria-hidden="true">03</span>
+              <h3>Опишите задачу</h3>
+              <p>Напишите запрос, прикрепите файл или скриншот и получите результат.</p>
+              <div class="step-mini" aria-hidden="true"><span class="mini-input">Сделай лендинг для кофейни<span class="mini-caret"></span></span></div>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PRICING ============ -->
+    <section class="section" id="pricing" aria-labelledby="pricing-title">
+      <div class="container">
+        <header class="section-head" data-reveal>
+          <span class="eyebrow">Тарифы</span>
+          <h2 id="pricing-title">Простые тарифы <span class="accent-text">без кредитов</span></h2>
+          <p>Все модели и API в каждом тарифе. Оплата за <span data-sub-days>30</span> дней, без автоматических списаний.</p>
+        </header>
+        <div class="pricing" id="pricing-grid"></div>
+        <noscript><p class="noscript-note">Тарифы и оплата доступны в нашем Telegram-боте.</p></noscript>
+        <p class="pricing-note" data-reveal>Оплата криптовалютой на сайте или Telegram Stars в боте. Ключ API выдаётся сразу после оплаты.</p>
+      </div>
+    </section>
+
+    <!-- ============ FAQ ============ -->
+    <section class="section" id="faq" aria-labelledby="faq-title">
+      <div class="container">
+        <header class="section-head" data-reveal>
+          <span class="eyebrow">FAQ</span>
+          <h2 id="faq-title">Частые вопросы</h2>
+        </header>
+        <div class="faq" id="faq-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ CTA ============ -->
+    <section class="section section-cta" aria-labelledby="cta-title">
+      <div class="container">
+        <div class="cta" data-reveal>
+          <span class="cta-glow" aria-hidden="true"></span>
+          <span class="eyebrow">Готовы?</span>
+          <h2 id="cta-title">Все нейросети ждут <span class="accent-text">вашу первую задачу</span></h2>
+          <p>Войдите через Telegram, выберите тариф и начните работать в чате или через API уже сегодня.</p>
+          <div class="cta-actions">
+            <a class="btn btn-accent btn-lg" href="/app">Начать</a>
+            <a class="btn btn-ghost btn-lg" href="https://t.me/dsfklgjfsdkbot" target="_blank" rel="noopener noreferrer" data-bot-link>Telegram-бот</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-brand">
+        <a class="wordmark" href="/"><span class="redact">unknown</span>shop</a>
+        <p>Нейросети для текста, изображений и видео в одном чате и через API.</p>
+      </div>
+      <nav class="footer-col" aria-label="Продукт">
+        <h4>Продукт</h4>
+        <a href="/app">Веб-чат</a>
+        <a href="#models">Модели</a>
+        <a href="#pricing">Тарифы</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <nav class="footer-col" aria-label="Разработчикам">
+        <h4>Разработчикам</h4>
+        <a href="/docs">Документация API</a>
+        <a href="/docs#models">ID моделей</a>
+        <a href="/docs#errors">Ошибки и лимиты</a>
+      </nav>
+      <nav class="footer-col" aria-label="Связь">
+        <h4>Связь</h4>
+        <a href="https://t.me/dsfklgjfsdkbot" target="_blank" rel="noopener noreferrer" data-bot-link>Telegram-бот</a>
+      </nav>
+    </div>
+    <div class="container footer-bottom">
+      <span>© <span id="year">2026</span> unknown shop</span>
+      <span>История чатов хранится только в вашем браузере</span>
+    </div>
+  </footer>
+</body>
+</html>

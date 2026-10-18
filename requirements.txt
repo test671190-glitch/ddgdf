@@ -1,0 +1,5 @@
+aiogram>=3.13,<4
+pydantic-settings>=2.7,<3
+aiosqlite>=0.20,<1
+# Нужен только для SOCKS-прокси (PROXY=socks5://...)
+aiohttp-socks>=0.9

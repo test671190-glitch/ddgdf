@@ -1,0 +1,17 @@
+# Окружение и кэши
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Секреты и данные: никогда не коммитить
+.env
+data/
+*.db
+*.db-journal
+
+# Артефакты сборки и деплоя
+*.tar.gz
+docs/preview/
+*.log
