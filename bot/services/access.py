@@ -54,9 +54,9 @@ async def deliver_activation(
             bot,
             settings,
             f"⚠️ Нет свободных ключей для тарифа <b>{tariff.title}</b>.\n"
-            f"Пользователь <code>{user_id}</code> ждёт ключ. Выдайте вручную:\n"
-            f"<code>/givekey {user_id} KEY</code>\n"
-            f"И пополните пул: <code>/addkeys {tariff.code}</code> + ключи с новой строки.",
+            f"Пользователь <code>{user_id}</code> ждёт ключ. Пополните пул:\n"
+            f"<code>/addkeys {tariff.code}</code> + ключи с новой строки — ключ выдастся "
+            f"автоматически, <code>/givekey</code> после этого не нужен.",
         )
     if act.revoked_key:
         await notify_admins(bot, settings, revoke_notice(user_id, act.revoked_key, "смена тарифа"))

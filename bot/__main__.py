@@ -46,14 +46,16 @@ async def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    db = Database(settings.db_path, hide_keys=settings.uses_gateway)
-    await db.connect()
-
+    # Бот создаётся до открытия базы: неверный формат BOT_TOKEN падает здесь, а открытая база
+    # (её поток не фоновый) не дала бы процессу завершиться — systemd считал бы его рабочим
     bot = Bot(
         token=settings.bot_token.get_secret_value(),
         session=AiohttpSession(proxy=settings.proxy) if settings.proxy else None,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
+    db = Database(settings.db_path, hide_keys=settings.uses_gateway)
+    await db.connect()
+
     crypto_client = (
         CryptoPayClient(settings.crypto_pay_token.get_secret_value(), settings.crypto_pay_url)
         if settings.crypto_pay_token

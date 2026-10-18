@@ -7,7 +7,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
 from aiogram.filters import CommandObject
 from aiogram.methods import RefundStarPayment
 
@@ -272,3 +272,22 @@ async def test_payment_db_error_is_reported_to_admin(db):
     assert any(chat == 1000 and "ch-lost" in text for chat, text in bot.sent)
     assert "Оплата получена" in message.answers[0][0]
     await db.connect()  # фикстура закроет базу ещё раз
+
+
+async def test_refund_telegram_5xx_answers_admin(db):
+    """Ошибку 5xx Telegram при возврате никто не ловил: админ оставался без ответа,
+    хотя Stars могли уже вернуться."""
+    await db.activate_paid(7, "pro", 30, 2541, "ch-1")
+    method = RefundStarPayment(user_id=7, telegram_payment_charge_id="ch-1")
+    bot = FakeBot(refund_errors=[TelegramServerError(method=method, message="Bad Gateway")])
+    message = FakeMessage()
+    await cmd_refund(message, admin_command("refund", "ch-1"), bot, db, SETTINGS)
+    assert "повторите" in message.answers[0][0]
+    assert not (await db.get_payment("ch-1")).refunded
+
+
+async def test_addkeys_single_key_without_tariff_is_deleted(db):
+    message = FakeMessage()
+    await cmd_addkeys(message, admin_command("addkeys", "sk-secret"), FakeBot(), db, SETTINGS)
+    assert "Формат" in message.answers[0][0]
+    assert message.deleted

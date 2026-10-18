@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import pytest
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.methods import GetMe
 
@@ -46,3 +47,21 @@ async def test_telegram_outage_is_retried_not_fatal(monkeypatch):
     assert me.username == "UnknownAiShopBot"
     assert bot.webhook_deleted
     assert waits == [5, 10]
+
+
+async def test_bad_token_format_exits_without_opening_db(monkeypatch, tmp_path):
+    """Неверный формат BOT_TOKEN падал уже после открытия базы. Её поток не фоновый —
+    процесс не завершался, и systemd считал бота работающим."""
+    from aiogram.utils.token import TokenValidationError
+
+    from bot.config import Settings
+
+    db_path = tmp_path / "data" / "bot.db"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, bot_token="not-a-token", db_path=str(db_path)),
+    )
+    with pytest.raises(TokenValidationError):
+        await main_module.main()
+    assert not db_path.exists()

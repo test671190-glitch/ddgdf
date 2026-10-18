@@ -352,8 +352,10 @@ class Database:
                 "VALUES (?, ?, ?, 'active', ?, ?) ON CONFLICT(key) DO UPDATE SET "
                 "tariff=excluded.tariff, user_id=excluded.user_id, status='active', "
                 "assigned_at=excluded.assigned_at, "
-                # если клиент уже видел ключ, он остаётся «засвеченным»
-                "exposed=MAX(api_keys.exposed, excluded.exposed)",
+                # Если клиент уже видел ключ, он остаётся «засвеченным». Свободный ключ из пула
+                # не видел никто (у только что добавленного exposed=1 по умолчанию)
+                "exposed=CASE WHEN api_keys.status='free' THEN excluded.exposed "
+                "ELSE MAX(api_keys.exposed, excluded.exposed) END",
                 (sub.tariff, key, user_id, _iso(now), 0 if self.hide_keys else 1),
             )
             return sub, revoked
@@ -387,8 +389,12 @@ class Database:
     async def add_keys(self, tariff: str, keys: list[str]) -> int:
         async with self._tx() as conn:
             before = conn.total_changes
+            # Ключ, снятый через /givekey как нерабочий (клиент его не видел), админ может
+            # вернуть в пул, добавив снова: иначе ошибочно снятый рабочий ключ терялся навсегда
             await conn.executemany(
-                "INSERT OR IGNORE INTO api_keys (tariff, key) VALUES (?, ?)",
+                "INSERT INTO api_keys (tariff, key) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET "
+                "tariff=excluded.tariff, status='free', user_id=NULL, assigned_at=NULL "
+                "WHERE api_keys.status='revoked' AND api_keys.exposed=0",
                 [(tariff, k) for k in keys],
             )
             return conn.total_changes - before
@@ -569,12 +575,12 @@ class Database:
             # точно входит в текущую подписку: иначе возврат старого платежа обрезал бы новый,
             # отдельно оплаченный период
             chain = await self._all(
-                "SELECT tariff, created_at FROM payments WHERE user_id=? AND refunded=0 "
+                "SELECT tariff, created_at, refunded FROM payments WHERE user_id=? "
                 "AND id >= (SELECT id FROM payments WHERE charge_id=?) ORDER BY id",
                 (pay.user_id, charge_id),
             )
             await conn.execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge_id,))
-            if not _continuous(chain, pay.tariff, timedelta(days=days)):
+            if not _in_current_period(chain, pay.tariff, timedelta(days=days), now):
                 return Refund(pay.user_id, None, adjusted=False)
             sub = await self.get_subscription(pay.user_id)
             revoked = None
@@ -607,8 +613,11 @@ class Database:
         """Отмечает напоминание о периоде, который кончается в expires_at. Если клиент
         успел продлить подписку, пока шла рассылка, флаг нового периода не трогаем."""
         async with self._tx() as conn:
+            # datetime() сравнивает моменты, а не строки: дата, поправленная в базе вручную
+            # в другом формате («Z» вместо «+00:00»), иначе давала напоминание каждые 10 минут
             await conn.execute(
-                "UPDATE subscriptions SET notified_soon=1 WHERE user_id=? AND expires_at=?",
+                "UPDATE subscriptions SET notified_soon=1 "
+                "WHERE user_id=? AND datetime(expires_at)=datetime(?)",
                 (user_id, _iso(expires_at)),
             )
 
@@ -698,17 +707,31 @@ class Database:
         }
 
 
-def _continuous(chain: list[aiosqlite.Row], tariff: str, period: timedelta) -> bool:
-    """Платёж chain[0] и все последующие — одно непрерывное продление того же тарифа.
+def _in_current_period(
+    chain: list[aiosqlite.Row], tariff: str, period: timedelta, now: datetime
+) -> bool:
+    """Дни платежа chain[0] ещё впереди в текущей подписке.
 
-    Каждый следующий платёж того же тарифа (при смене тарифа старые дни сгорают) и сделан
-    раньше, чем мог кончиться предыдущий период. Тогда дни chain[0] ещё в текущей подписке.
+    chain — этот платёж и все следующие платежи клиента, в том числе возвращённые.
+    Оплаченный конец считаем по цепочке продлений: платёж, сделанный до конца, продлевает
+    его, после конца — начинает новый период (старый тогда уже прошёл). Любая смена тарифа,
+    даже возвращённая позже, сжигает старые дни. Возвращённые продления дней не добавляют.
+    Платёж входит в подписку, если цепочка непрерывна и её конец ещё не наступил.
     """
-    for prev, nxt in zip(chain, chain[1:], strict=False):
-        prev_at = datetime.fromisoformat(prev["created_at"])
-        if nxt["tariff"] != tariff or datetime.fromisoformat(nxt["created_at"]) >= prev_at + period:
+    end: datetime | None = None
+    for row in chain:
+        if row["tariff"] != tariff:
             return False
-    return True
+        if end is not None and row["refunded"]:
+            continue
+        created = datetime.fromisoformat(row["created_at"])
+        if end is None:
+            end = created + period
+        elif created < end:
+            end += period
+        else:
+            return False
+    return end is not None and end > now
 
 
 def _subscription(row: aiosqlite.Row) -> Subscription:

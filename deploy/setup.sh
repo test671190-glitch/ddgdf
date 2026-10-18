@@ -24,16 +24,17 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$APP_DIR" --no-create-home --shell /usr/sbin/nologin "$APP_USER"
 fi
 
-# При повторном запуске бот уже работает: пока ниже меняются пакеты и права на data/,
-# он не смог бы записать оплату в базу. Останавливаем, в конце скрипт запустит его снова
-systemctl stop unknownshop 2>/dev/null || true
-
 echo "==> Python-окружение"
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip -q
 .venv/bin/pip install -r requirements.txt -q
 
 mkdir -p data
+
+# При повторном запуске бот уже работает: пока ниже меняются права на data/, он не смог бы
+# записать оплату в базу. Останавливаем только здесь — если pip выше упадёт, бот продолжит
+# работать. В конце скрипт запустит его снова
+systemctl stop unknownshop 2>/dev/null || true
 
 echo "==> Права: код принадлежит root, бот пишет только в data/, .env читают root и бот"
 chown -R root:root "$APP_DIR"

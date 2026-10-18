@@ -5,6 +5,7 @@
 поэтому ключ не нужно вводить в браузере.
 """
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -327,7 +328,9 @@ class WebApp:
         status = order.status
         if self.crypto is not None and status == "pending":
             try:
-                status = await self.crypto.check(order)
+                # shield: если браузер закроет запрос посреди проверки, заказ уже мог стать
+                # оплаченным, а выдача ключа и уведомления не должны отмениться вместе с ним
+                status = await asyncio.shield(self.crypto.check(order))
             except CryptoPayError as e:
                 logger.warning("Crypto Pay: %s", e)
         public = {"approved": "paid", "pending": "pending"}.get(status, "expired")

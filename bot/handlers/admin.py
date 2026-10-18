@@ -3,7 +3,12 @@
 from html import escape
 
 from aiogram import Bot, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
@@ -79,12 +84,14 @@ async def cmd_addkeys(
     message: Message, command: CommandObject, bot: Bot, db: Database, settings: Settings
 ) -> None:
     parts = (command.args or "").split()
+    if parts:
+        # Убираем ключи из чата сразу, а не после выдачи ожидающим: она может занять время,
+        # а при опечатке в тарифе (или ключе без тарифа) ответа «готово» не будет вовсе
+        await _delete_secret(message)
     if len(parts) < 2 or parts[0] not in TARIFFS:
         await message.answer(
             f"Формат:\n<code>/addkeys pro\nключ1\nключ2</code>\n\nТарифы: {TARIFF_CODES}"
         )
-        if len(parts) > 1:  # опечатка в тарифе, а ключи уже в чате
-            await _delete_secret(message)
         return
     tariff, keys = parts[0], parts[1:]
     added = await db.add_keys(tariff, keys)
@@ -98,7 +105,6 @@ async def cmd_addkeys(
     if delivered:
         text += f"\nСразу выдано ожидавшим оплатившим: {delivered}"
     await message.answer(text)
-    await _delete_secret(message)
 
 
 async def _delete_secret(message: Message) -> None:
@@ -243,7 +249,7 @@ async def cmd_refund(
             if "CHARGE_ALREADY_REFUNDED" not in e.message:
                 await message.answer(f"❌ Telegram отказал в возврате: {escape(e.message)}")
                 return
-        except TelegramNetworkError as e:
+        except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter) as e:
             await message.answer(
                 f"⚠️ Telegram не ответил ({escape(e.message)}). Stars могли уже вернуться — "
                 f"повторите <code>/refund {escape(charge_id)}</code>, дважды они не спишутся."
@@ -253,7 +259,12 @@ async def cmd_refund(
     if refund is None:  # тот же /refund, отправленный параллельно, успел раньше
         await message.answer("Этот платёж уже возвращён")
         return
-    amount = f"${TARIFFS[payment.tariff].price_usd}" if is_crypto else f"⭐ {payment.stars}"
+    # тариф могли убрать из каталога: возврат уже записан, ответ админу не должен падать
+    tariff = TARIFFS.get(payment.tariff)
+    if not is_crypto:
+        amount = f"⭐ {payment.stars}"
+    else:
+        amount = f"${tariff.price_usd}" if tariff else f"оплату тарифа {payment.tariff}"
     if refund.adjusted:
         days_note = "дни списаны."
     else:

@@ -148,6 +148,9 @@ class Gateway:
         if self._http is None or self._http.closed:
             self._http = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(limit=UPSTREAM_CONNECTIONS),
+                # Сессия общая на всех клиентов: cookies провайдера одного клиента
+                # не должны уходить с запросами другого
+                cookie_jar=aiohttp.DummyCookieJar(),
                 # сжатый ответ провайдера пересылаем как есть, не распаковывая
                 auto_decompress=False,
                 timeout=aiohttp.ClientTimeout(
@@ -158,29 +161,42 @@ class Gateway:
 
     async def _request(
         self, method: str, url: str, params, body: bytes | None, headers: dict[str, str]
-    ) -> aiohttp.ClientResponse:
+    ) -> tuple[aiohttp.ClientResponse, bool]:
         """Запрос к провайдеру. Редиректы проходим сами: при переходе на другой хост
         (например, видео на CDN) aiohttp убирает только Authorization, а x-api-key с ключом
-        провайдера ушёл бы постороннему серверу."""
+        провайдера ушёл бы постороннему серверу.
+
+        Второй элемент — ушёл ли последний запрос с ключом провайдера. Без ключа ответ
+        401/403 говорит не о сломанном ключе, а о чужом хосте или подписанной ссылке.
+        """
         session = self._session()
-        origin = URL(self.settings.api_base_url).origin()
+        base = URL(self.settings.api_base_url)
+        provider = (base.scheme, base.host, base.port)  # port учитывает порт по умолчанию
+        keyed = True
         up = await session.request(
             method, url, params=params, data=body, headers=headers, allow_redirects=False
         )
-        for _ in range(MAX_REDIRECTS):
+        for _ in range(MAX_REDIRECTS + 1):
             location = up.headers.get("Location")
             if up.status not in REDIRECT_STATUSES or not location:
-                break
-            target = up.url.join(URL(location))
+                return up, keyed
             up.release()
-            if target.origin() != origin:
+            try:
+                target = up.url.join(URL(location))
+                target_host = (target.scheme, target.host, target.port)
+            except ValueError as e:  # битый Location — ошибка провайдера, клиенту 502
+                raise aiohttp.InvalidUrlRedirectClientError(location, str(e)) from e
+            if keyed and target_host != provider:
                 headers = {k: v for k, v in headers.items() if k not in PROVIDER_AUTH_HEADERS}
+                keyed = False
             if up.status == 303 or (up.status in (301, 302) and method == "POST"):
                 method, body = "GET", None
             up = await session.request(
                 method, target, data=body, headers=headers, allow_redirects=False
             )
-        return up
+        # Бесконечные редиректы: сырой 3xx отдал бы клиенту адрес провайдера
+        up.release()
+        raise aiohttp.TooManyRedirects(up.request_info, (), status=up.status)
 
     async def index(self, _: web.Request) -> web.Response:
         return web.json_response(
@@ -232,10 +248,10 @@ class Gateway:
 
         started = time.monotonic()
         try:
-            async with await self._request(request.method, url, request.query, body, headers) as up:
-                # (ответ именно провайдера, а не CDN после редиректа: там ключ не участвует)
-                provider_answered = up.url.origin() == URL(self.settings.api_base_url).origin()
-                if up.status in (401, 402, 403) and provider_answered:
+            up, keyed = await self._request(request.method, url, request.query, body, headers)
+            async with up:
+                # (только на запрос с ключом провайдера: после редиректа на CDN ключа нет)
+                if up.status in (401, 402, 403) and keyed:
                     # ключ провайдера из пула не работает (отозван, у аккаунта кончился тариф) —
                     # это наша проблема, не клиента: его подписку мы уже проверили выше
                     self._report_bad_upstream_key(user_id, upstream_key, up.status)

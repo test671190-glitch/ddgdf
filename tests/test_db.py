@@ -464,3 +464,104 @@ async def test_migration_adds_columns(tmp_path):
     order = await database.set_crypto_invoice(order.id, 7, "u", utcnow() + timedelta(hours=1))
     assert order.invoice_id == 7
     await database.close()
+
+
+async def backdate(db, charge_id, ago):
+    await db.conn.execute(
+        "UPDATE payments SET created_at=? WHERE charge_id=?", (_iso(utcnow() - ago), charge_id)
+    )
+    await db.conn.commit()
+
+
+async def test_refund_after_refunded_tariff_switch_keeps_new_period(db):
+    """A pro → B unlimited (дни A сгорели) → C pro. Сначала вернули B, потом A: возвращённый B
+    выпадал из проверки, и возврат A отнимал 30 дней у периода, оплаченного C."""
+    await db.add_keys("pro", ["k1", "k2"])
+    await db.add_keys("unlimited", ["u1"])
+    await db.activate_paid(1, "pro", 30, 1, "A")
+    await db.activate_paid(1, "unlimited", 30, 1, "B")
+    await db.activate_paid(1, "pro", 30, 1, "C")
+    assert not (await db.refund("B", 30)).adjusted
+    refund = await db.refund("A", 30)
+    assert not refund.adjusted and refund.revoked_key is None
+    assert (await db.get_subscription(1)).is_active
+
+
+async def test_refund_of_finished_payment_keeps_granted_period(db):
+    """Период платежа давно прошёл, админ выдал /grant. Возврат старого платежа отнимал
+    дни у выданного периода."""
+    await db.add_keys("pro", ["k1"])
+    await db.activate_paid(1, "pro", 30, 1, "A")
+    await backdate(db, "A", timedelta(days=40))
+    await expire_now(db, 1, timedelta(days=10))
+    await db.expire_due()
+    granted = await db.grant(1, "pro", 30)
+    refund = await db.refund("A", 30)
+    assert not refund.adjusted
+    assert (await db.get_subscription(1)).expires_at == granted.expires_at
+
+
+async def test_refund_of_prepaid_periods_takes_days(db):
+    """Три периода куплены сразу, через 35 дней — продление. Возврат первого платежа
+    дни не списывал: проверка смотрела на окно одного платежа, а не на конец подписки."""
+    await db.add_keys("pro", ["k1"])
+    for charge in ("A", "B", "C"):
+        await db.activate_paid(1, "pro", 30, 1, charge)
+        await backdate(db, charge, timedelta(days=35))
+    before = (await db.activate_paid(1, "pro", 30, 1, "D")).expires_at
+    refund = await db.refund("A", 30)
+    assert refund.adjusted
+    assert (await db.get_subscription(1)).expires_at == before - timedelta(days=30)
+
+
+async def test_wrongly_replaced_key_can_be_returned_to_pool():
+    """Ключ, снятый через /givekey как нерабочий, мог оказаться рабочим (админ выдал ключ
+    по старому алерту, хотя клиент уже получил его автоматически). Повторный /addkeys
+    возвращает его в пул — раньше он терялся навсегда."""
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    await db.activate_paid(1, "pro", 30, 1, "c1")  # пул пуст
+    await db.add_keys("pro", ["K1"])
+    await db.assign_waiting("pro")  # K1 выдан автоматически
+    await db.assign_key(1, "K2")  # админ по старому алерту
+    assert await db.add_keys("pro", ["K1"]) == 1
+    assert (await db.activate_paid(2, "pro", 30, 1, "c2")).key == "K1"
+    await db.close()
+
+
+async def test_seen_key_is_not_returned_by_addkeys(db):
+    """Ключ, который видел клиент и который отключён у провайдера, в пул не возвращается."""
+    await db.add_keys("pro", ["k1"])
+    await db.activate_paid(1, "pro", 30, 1, "c1")
+    await expire_now(db, 1)
+    await db.expire_due()
+    await db.mark_revoked_done("k1")
+    assert await db.add_keys("pro", ["k1"]) == 0
+    assert (await db.key_stats())["pro"] == {"revoked": 1}
+
+
+async def test_givekey_with_pool_key_keeps_it_hidden():
+    """/givekey свободным ключом из пула помечал его «засвеченным»: после окончания
+    подписки рабочий ключ уходил в список на отключение вместо пула."""
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    await db.add_keys("pro", ["K-pool"])
+    await db.grant(1, "pro", 30)  # K-pool выдан сам
+    await db.add_keys("pro", ["K-new"])
+    await db.assign_key(1, "K-new")
+    await expire_now(db, 1)
+    assert [key for _, key in await db.expire_due()] == [None]
+    assert (await db.key_stats())["pro"]["free"] == 1
+    await db.close()
+
+
+async def test_reminder_marked_for_expiry_edited_by_hand(db):
+    """Дату поправили в базе вручную в другом формате — напоминание шло каждые 10 минут."""
+    await db.grant(1, "pro", 2)
+    (due,) = await db.due_reminders(timedelta(days=3))
+    edited = due.expires_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    await db.conn.execute("UPDATE subscriptions SET expires_at=? WHERE user_id=1", (edited,))
+    await db.conn.commit()
+    (due,) = await db.due_reminders(timedelta(days=3))
+    await db.mark_reminded(1, due.expires_at)
+    assert await db.due_reminders(timedelta(days=3)) == []

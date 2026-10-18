@@ -438,3 +438,112 @@ async def test_many_slow_requests_do_not_block_other_clients(env):
         await session.close()
         await gw.close()
         await slow_server.close()
+
+
+@pytest.fixture
+async def redirecting():
+    """Провайдер и CDN с редиректами между ними: битый Location, петля, возврат на провайдера."""
+    ports: dict = {}
+    alerts: list[str] = []
+    cookies_seen: list[str | None] = []
+
+    async def needauth(request: web.Request) -> web.Response:
+        if "Authorization" not in request.headers:
+            return web.json_response({"error": "no key"}, status=401)
+        return web.json_response({"ok": True})
+
+    async def badloc(request: web.Request) -> web.Response:
+        return web.Response(status=302, headers={"Location": "http://[bad"})
+
+    async def loop(request: web.Request) -> web.Response:
+        location = f"http://localhost:{ports['up']}/api/v1/chat/loop?sig=secret"
+        return web.Response(status=302, headers={"Location": location})
+
+    async def tocdn(request: web.Request) -> web.Response:
+        return web.Response(
+            status=302, headers={"Location": f"http://127.0.0.1:{ports['cdn']}/hop"}
+        )
+
+    async def cookie(request: web.Request) -> web.Response:
+        cookies_seen.append(request.headers.get("Cookie"))
+        response = web.json_response({"ok": True})
+        response.set_cookie("provider_session", "client-a-secret")
+        return response
+
+    async def hop(request: web.Request) -> web.Response:
+        location = f"http://localhost:{ports['up']}/api/v1/chat/needauth"
+        return web.Response(status=302, headers={"Location": location})
+
+    up_app = web.Application()
+    for name, handler in [
+        ("needauth", needauth),
+        ("badloc", badloc),
+        ("loop", loop),
+        ("tocdn", tocdn),
+        ("cookie", cookie),
+    ]:
+        up_app.router.add_route("*", f"/api/v1/chat/{name}", handler)
+    cdn_app = web.Application()
+    cdn_app.router.add_get("/hop", hop)
+    up, cdn = TestServer(up_app), TestServer(cdn_app)
+    await up.start_server()
+    await cdn.start_server()
+    ports["up"], ports["cdn"] = up.port, cdn.port
+
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    await db.add_keys("pro", ["UPKEY"])
+    await db.grant(1, "pro", 30)
+    key = await db.get_or_create_client_key(1)
+
+    async def alert(text: str) -> None:
+        alerts.append(text)
+
+    gateway = Gateway(
+        db,
+        # localhost, а не 127.0.0.1: для IP-адресов aiohttp cookies не хранит вовсе
+        Settings(bot_token="1:x", api_base_url=f"http://localhost:{up.port}/api/v1"),
+        alert=alert,
+    )
+    client = TestClient(TestServer(gateway.build()))
+    await client.start_server()
+    yield client, {"Authorization": f"Bearer {key}"}, alerts, cookies_seen
+    await client.close()
+    await up.close()
+    await cdn.close()
+    await db.close()
+
+
+async def test_malformed_redirect_is_502_json(redirecting):
+    """Битый Location у провайдера давал 500 text/plain, который SDK клиента не разберёт."""
+    client, auth, *_ = redirecting
+    resp = await client.post("/v1/chat/badloc", json={}, headers=auth)
+    assert resp.status == 502
+    assert (await resp.json())["error"]["code"] == "upstream_error"
+
+
+async def test_redirect_loop_does_not_expose_provider_address(redirecting):
+    """После пяти редиректов клиенту уходил сырой 302 с адресом и подписью провайдера."""
+    client, auth, *_ = redirecting
+    resp = await client.get("/v1/chat/loop", headers=auth, allow_redirects=False)
+    assert resp.status == 502
+    assert "Location" not in resp.headers
+
+
+async def test_cdn_bouncing_back_to_provider_is_not_bad_key_alert(redirecting):
+    """Провайдер → CDN → провайдер: ключ мы сняли сами на чужом хосте. 401 провайдера тогда
+    не значит, что ключ сломан, — админ не должен получать ложную тревогу."""
+    client, auth, alerts, _ = redirecting
+    resp = await client.get("/v1/chat/tocdn", headers=auth)
+    await asyncio.sleep(0.05)
+    assert resp.status == 401
+    assert alerts == []
+
+
+async def test_provider_cookies_are_not_shared_between_clients(redirecting):
+    """Сессия к провайдеру общая на всех: cookie, выданная на запрос одного клиента,
+    уходила с запросами следующих."""
+    client, auth, _, cookies_seen = redirecting
+    for _ in range(2):
+        assert (await client.get("/v1/chat/cookie", headers=auth)).status == 200
+    assert cookies_seen == [None, None]

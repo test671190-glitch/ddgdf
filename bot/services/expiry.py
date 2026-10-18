@@ -33,8 +33,16 @@ async def check_subscriptions(bot: Bot, db: Database, settings: Settings) -> Non
 
     # Ключи, вернувшиеся в пул (окончание подписки, смена тарифа, возврат), сразу получают
     # те, кто оплатил при пустом пуле
-    for tariff in TARIFFS:
-        await deliver_waiting(bot, db, settings, tariff)
+    for code, tariff in TARIFFS.items():
+        delivered = await deliver_waiting(bot, db, settings, code)
+        if delivered:
+            # админу пришёл алерт «пул пуст» — сообщаем, что вручную выдавать уже не нужно
+            await notify_admins(
+                bot,
+                settings,
+                f"✅ Освободившиеся ключи {tariff.title} выданы ожидавшим: {delivered}. "
+                "/givekey не нужен.",
+            )
 
 
 async def expiry_loop(bot: Bot, db: Database, settings: Settings, interval: int = 600) -> None:
