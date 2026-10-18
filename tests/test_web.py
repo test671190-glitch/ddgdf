@@ -40,6 +40,8 @@ class FakeCryptoClient:
 
 async def fake_upstream(request: web.Request) -> web.StreamResponse:
     """Имитирует API моделей: проверяет ключ, отвечает JSON или SSE."""
+    if request.headers.get("Authorization") == "Bearer k-lapsed":
+        return web.json_response({"error": {"code": "subscription_required"}}, status=402)
     if request.headers.get("Authorization") != "Bearer k-pro":
         return web.json_response({"error": {"code": "invalid_api_key"}}, status=401)
     if request.method == "GET":
@@ -298,6 +300,18 @@ async def test_rejected_provider_key_is_not_session_error(env):
     """401 провайдера (плохой ключ из пула) не должен выглядеть для сайта как выход из сессии."""
     client, db, *_ = env
     await db.add_keys("pro", ["k-bad"])
+    await db.grant(42, "pro", 30)
+    await login(client, db, 42)
+    resp = await client.post("/api/chat/completions", json={"model": "x", "messages": []})
+    assert resp.status == 503
+    assert (await resp.json())["error"]["code"] == "provider_key_error"
+
+
+async def test_provider_402_is_not_shown_as_missing_subscription(env):
+    """У аккаунта провайдера кончился тариф: оплативший клиент не должен видеть
+    «нужна активная подписка» — исправление из gateway.py не было перенесено сюда."""
+    client, db, *_ = env
+    await db.add_keys("pro", ["k-lapsed"])
     await db.grant(42, "pro", 30)
     await login(client, db, 42)
     resp = await client.post("/api/chat/completions", json={"model": "x", "messages": []})

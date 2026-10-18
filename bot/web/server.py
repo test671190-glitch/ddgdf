@@ -382,9 +382,10 @@ class WebApp:
             headers["Content-Type"] = "application/json"
         try:
             async with self._session().request(method, url, data=body, headers=headers) as up:
-                if up.status == 401:
-                    # Провайдер отклонил ключ из пула. Отдать 401 нельзя: сайт решит,
-                    # что истекла сессия, и попросит войти заново (как в gateway.py)
+                if up.status in (401, 402, 403):
+                    # Провайдер отклонил ключ из пула (отозван, у аккаунта кончился тариф).
+                    # Отдать 401/402 нельзя: сайт решит, что истекла сессия или у клиента нет
+                    # подписки, хотя проблема наша (как в gateway.py)
                     logger.error("Ключ провайдера отклонён (%s) на %s", up.status, path)
                     return api_error(
                         503,
