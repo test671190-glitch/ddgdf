@@ -7,6 +7,7 @@
 
 import asyncio
 import logging
+from collections import defaultdict
 from datetime import timedelta
 
 from aiogram import Bot
@@ -27,9 +28,16 @@ class CryptoPayments:
         self.db = db
         self.bot = bot
         self.settings = settings
+        # Двойное нажатие «Оплатить криптой» шлёт два запроса подряд: без блокировки оба
+        # не находят открытого счёта и выставляют два
+        self._locks: defaultdict[tuple[int, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def get_or_create(self, user_id: int, tariff: Tariff) -> CryptoOrder:
         """Возвращает действующий счёт пользователя на этот тариф или создаёт новый."""
+        async with self._locks[(user_id, tariff.code)]:
+            return await self._get_or_create(user_id, tariff)
+
+    async def _get_or_create(self, user_id: int, tariff: Tariff) -> CryptoOrder:
         order = await self.db.open_crypto_order(user_id, tariff.code)
         if order:
             return order

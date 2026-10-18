@@ -7,7 +7,7 @@ from aiogram.filters import CommandObject
 
 from bot.config import Settings
 from bot.db import Database
-from bot.handlers.admin import cmd_givekey, cmd_grant, cmd_user
+from bot.handlers.admin import cmd_addkeys, cmd_givekey, cmd_grant, cmd_user
 from bot.handlers.sections import cmd_start
 from bot.keyboards.inline import WebLogin
 
@@ -62,6 +62,35 @@ async def test_admin_commands_reject_non_decimal_digits(db, handler, command, ar
         kwargs |= {"bot": None, "settings": Settings(bot_token="1:x")}
     await handler(**kwargs)
     assert reply in message.answers[0][0]
+
+
+async def test_addkeys_delivers_keys_to_waiting_payers(db):
+    """Клиент оплатил при пустом пуле. После /addkeys он сразу получает ключ."""
+
+    class FakeBot:
+        def __init__(self) -> None:
+            self.sent: list[tuple[int, str]] = []
+
+        async def send_message(self, chat_id, text, **_):
+            self.sent.append((chat_id, text))
+
+    class AdminMessage(FakeMessage):
+        async def delete(self) -> None:
+            self.deleted = True
+
+    db.hide_keys = True
+    await db.activate_paid(7, "pro", 30, 2541, "c1")  # пул пуст
+    bot = FakeBot()
+    message = AdminMessage()
+    settings = Settings(bot_token="1:x", public_api_url="https://x.sslip.io/v1")
+    await cmd_addkeys(message, admin_command("addkeys", "pro\nup-1\nup-2"), bot, db, settings)
+
+    client_key = await db.get_client_key(7)
+    assert client_key and client_key.startswith("sk-us-")
+    assert [chat for chat, _ in bot.sent] == [7]
+    assert client_key in bot.sent[0][1] and "up-1" not in bot.sent[0][1]
+    assert "ожидавшим оплатившим: 1" in message.answers[0][0]
+    assert message.deleted
 
 
 @pytest.mark.parametrize("token", ["x" * 100, "a:b", ""])

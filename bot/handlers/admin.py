@@ -73,7 +73,9 @@ async def cmd_keys(message: Message, db: Database) -> None:
 
 
 @router.message(Command("addkeys"))
-async def cmd_addkeys(message: Message, command: CommandObject, db: Database) -> None:
+async def cmd_addkeys(
+    message: Message, command: CommandObject, bot: Bot, db: Database, settings: Settings
+) -> None:
     parts = (command.args or "").split()
     if len(parts) < 2 or parts[0] not in TARIFFS:
         await message.answer(
@@ -82,10 +84,25 @@ async def cmd_addkeys(message: Message, command: CommandObject, db: Database) ->
         return
     tariff, keys = parts[0], parts[1:]
     added = await db.add_keys(tariff, keys)
+    # Кто оплатил, пока пул был пуст, получает ключ сразу, без ручного /givekey
+    waiting = await db.assign_waiting(tariff)
+    title = TARIFFS[tariff].title
+    for user_id, upstream_key in waiting:
+        visible = await shown_key(db, settings, user_id, upstream_key)
+        await safe_send(
+            bot,
+            user_id,
+            texts.key_issued(title, visible, settings),
+            reply_markup=profile_keyboard(
+                has_subscription=True, key=visible, can_rotate=settings.uses_gateway
+            ),
+        )
     skipped = len(keys) - added
-    text = f"✅ Добавлено ключей для {TARIFFS[tariff].title}: {added}"
+    text = f"✅ Добавлено ключей для {title}: {added}"
     if skipped:
         text += f"\nПропущено дублей: {skipped}"
+    if waiting:
+        text += f"\nСразу выдано ожидавшим оплатившим: {len(waiting)}"
     await message.answer(text)
     # Сообщение содержит ключи — удаляем его из чата
     try:

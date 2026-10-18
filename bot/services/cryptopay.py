@@ -66,7 +66,11 @@ class CryptoPayClient:
             expires_in=expires_in,
             allow_comments=False,
         )
-        return _invoice(result)
+        invoice = _invoice(result)
+        if not invoice.pay_url:
+            # без ссылки кнопку «Оплатить» не построить — считаем это ошибкой сервиса
+            raise CryptoPayError(f"createInvoice: в ответе нет ссылки на оплату ({result})")
+        return invoice
 
     async def get_invoices(self, invoice_ids: list[int]) -> list[Invoice]:
         if not invoice_ids:

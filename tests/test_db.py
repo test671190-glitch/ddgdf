@@ -234,6 +234,38 @@ async def test_keys_shown_after_gateway_off_need_revoking(tmp_path):
     await without_gateway.close()
 
 
+async def test_waiting_subscribers_get_keys_after_pool_refill(db):
+    """Оплатил, пока пул был пуст → после /addkeys ключ должен достаться ему сам."""
+    await db.activate_paid(1, "pro", 30, 1, "c1")  # пул пуст — ключа нет
+    await db.activate_paid(2, "unlimited", 30, 1, "c2")  # другой тариф
+    await db.add_keys("pro", ["k-old"])
+    await db.activate_paid(3, "pro", 30, 1, "c3")  # получил k-old сразу
+    await db.grant(4, "pro", 30)  # пул снова пуст
+    await db.conn.execute(
+        "UPDATE subscriptions SET expires_at=? WHERE user_id=4",
+        (_iso(utcnow() - timedelta(minutes=1)),),
+    )  # подписка уже кончилась — ключ ему не нужен
+
+    await db.add_keys("pro", ["k1", "k2", "k3"])
+    assigned = await db.assign_waiting("pro")
+
+    assert assigned == [(1, "k1")]
+    assert (await db.get_active_key(1)).key == "k1"
+    assert (await db.get_active_key(3)).key == "k-old"
+    assert await db.get_active_key(2) is None
+    assert await db.get_active_key(4) is None
+    assert (await db.key_stats())["pro"] == {"active": 2, "free": 2}
+
+
+async def test_waiting_subscribers_more_than_keys(db):
+    for user in (1, 2, 3):
+        await db.grant(user, "pro", 30)
+    await db.add_keys("pro", ["k1"])
+    assigned = await db.assign_waiting("pro")
+    assert assigned == [(1, "k1")]  # кто раньше купил — тот раньше получил
+    assert await db.assign_waiting("pro") == []
+
+
 async def test_client_keys(db):
     key = await db.get_or_create_client_key(5)
     assert key.startswith("sk-us-") and len(key) > 40

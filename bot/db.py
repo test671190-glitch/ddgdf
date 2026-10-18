@@ -341,6 +341,29 @@ class Database:
             )
             return sub, revoked
 
+    async def assign_waiting(self, tariff: str) -> list[tuple[int, str]]:
+        """Раздаёт свободные ключи тем, кто оплатил тариф, пока пул был пуст.
+
+        Возвращает [(user_id, ключ провайдера)] — им надо отправить ключ. Первыми получают
+        те, у кого подписка кончается раньше (то есть купившие раньше).
+        """
+        now = utcnow()
+        async with self._tx():
+            rows = await self._all(
+                "SELECT s.user_id FROM subscriptions s WHERE s.tariff=? AND s.expires_at > ? "
+                "AND NOT EXISTS (SELECT 1 FROM api_keys k "
+                "WHERE k.user_id=s.user_id AND k.status='active') "
+                "ORDER BY s.expires_at, s.user_id",
+                (tariff, _iso(now)),
+            )
+            assigned = []
+            for row in rows:
+                key = await self._take_free_key(row["user_id"], tariff, now)
+                if key is None:
+                    break
+                assigned.append((row["user_id"], key))
+            return assigned
+
     async def add_keys(self, tariff: str, keys: list[str]) -> int:
         async with self._tx() as conn:
             before = conn.total_changes
