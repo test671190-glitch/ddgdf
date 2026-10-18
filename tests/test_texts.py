@@ -75,6 +75,32 @@ def test_all_texts_are_valid_telegram_html(settings):
         check(html)
 
 
+@pytest.mark.parametrize(
+    ("left", "days"),
+    [
+        (timedelta(days=30) - timedelta(seconds=1), 30),  # только что купил — 30, а не 29
+        (timedelta(hours=23), 1),  # подписка ещё работает — не «0 дн.»
+        (timedelta(days=2), 2),
+        (-timedelta(hours=1), 0),
+    ],
+)
+def test_days_left_rounds_up(left, days):
+    sub = Subscription(1, "pro", utcnow() + left)
+    assert texts.days_left(sub) == days
+
+
+def test_support_username_from_link():
+    """Ссылку целиком превращали в https://t.me/https://t.me/help_bot."""
+    for value in ("https://t.me/help_bot", "t.me/help_bot/", "@help_bot", " help_bot "):
+        settings = Settings(_env_file=None, bot_token="1:x", support_username=value)
+        assert settings.support_username == "help_bot"
+
+
+def test_blank_public_api_url_keeps_gateway_off():
+    settings = Settings(_env_file=None, bot_token="1:x", public_api_url="   ")
+    assert not settings.uses_gateway
+
+
 def test_progress_bar():
     assert texts.progress_bar(15, 30) == "▰▰▰▰▰▱▱▱▱▱"
     assert texts.progress_bar(40, 30) == "▰" * 10

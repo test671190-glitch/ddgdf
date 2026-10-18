@@ -133,6 +133,7 @@ async def cb_crypto_check(
     callback: CallbackQuery,
     callback_data: CryptoCheck,
     db: Database,
+    settings: Settings,
     crypto: CryptoPayments | None,
 ) -> None:
     order = await db.get_crypto_order(callback_data.order_id)
@@ -145,7 +146,13 @@ async def cb_crypto_check(
         await safe_answer(callback, "Crypto Pay не отвечает, попробуйте позже", show_alert=True)
         return
     if status == "approved":
-        await safe_answer(callback, "Оплата получена, ключ уже в чате")
+        # Показываем профиль с ключом прямо здесь: сообщение с ключом могло не дойти
+        # (сбой Telegram в момент оплаты), а «ключ уже в чате» тогда неправда.
+        # Импорт внутри: sections сам импортирует этот модуль
+        from bot.handlers.sections import render_profile
+
+        text, markup = await render_profile(callback.from_user.id, db, settings)
+        await show(callback, "<b>Оплата получена.</b>\n\n" + text, markup)
     elif status == "expired":
         tariff = TARIFFS[order.tariff]
         await show(callback, texts.crypto_expired(order), renew_keyboard(tariff.code))

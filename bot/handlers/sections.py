@@ -154,6 +154,11 @@ async def cb_rotate_key(
     if not settings.uses_gateway:
         await safe_answer(callback, "Перевыпуск ключа недоступен", show_alert=True)
         return
+    # кнопку можно подделать или нажать старую: перевыпуск только при действующем доступе
+    sub = await db.get_subscription(callback.from_user.id)
+    if sub is None or not sub.is_active or await db.get_active_key(callback.from_user.id) is None:
+        await safe_answer(callback, "Перевыпуск доступен при активной подписке", show_alert=True)
+        return
     if not callback_data.confirm:
         await show(callback, texts.rotate_confirm(), rotate_keyboard())
         return

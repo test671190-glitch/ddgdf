@@ -52,7 +52,16 @@ class Settings(BaseSettings):
     @field_validator("support_username")
     @classmethod
     def strip_at(cls, value: str) -> str:
-        return value.strip().lstrip("@")
+        # Часто вставляют ссылку целиком: кнопка тогда вела на https://t.me/https://t.me/...
+        value = value.strip().removeprefix("https://").removeprefix("http://")
+        value = value.removeprefix("t.me/").removeprefix("telegram.me/")
+        return value.strip("/").lstrip("@")
+
+    @field_validator("public_api_url", "api_base_url", "docs_url")
+    @classmethod
+    def strip_spaces(cls, value: str) -> str:
+        # PUBLIC_API_URL из одних пробелов включал эндпоинт с пустым адресом
+        return value.strip()
 
     @property
     def anthropic_base_url(self) -> str:

@@ -220,6 +220,25 @@ async def test_web_login_flow(db):
     assert await db.web_login_status("missing") == ("expired", None)
 
 
+async def test_web_login_double_tap_is_still_confirmed(db):
+    """Двойное нажатие «Да, это я» перетирало «Вход подтверждён» текстом «Ссылка устарела»."""
+    await db.create_web_login("tok", timedelta(minutes=5))
+    assert await db.confirm_web_login("tok", 42)
+    assert await db.confirm_web_login("tok", 42)
+    assert not await db.confirm_web_login("tok", 43)
+    assert await db.web_login_status("tok") == ("confirmed", 42)
+
+
+async def test_rotating_key_logs_out_web_sessions(db):
+    """Ключ перевыпускают, когда доступ мог уйти к чужому, а сайт показывает ключ:
+    чужой браузер не должен сразу увидеть новый."""
+    await db.create_web_session("s1", 42, timedelta(days=30))
+    await db.create_web_session("s2", 7, timedelta(days=30))
+    await db.rotate_client_key(42)
+    assert await db.web_session_user("s1", timedelta(days=30)) is None
+    assert await db.web_session_user("s2", timedelta(days=30)) == 7
+
+
 async def test_web_login_expires(db):
     await db.create_web_login("old", timedelta(seconds=-1))
     assert await db.web_login_status("old") == ("expired", None)

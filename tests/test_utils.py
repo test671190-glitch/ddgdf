@@ -1,6 +1,11 @@
 """Отправка сообщений: лимит частоты Telegram не должен терять напоминания и ключи."""
 
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.methods import SendMessage
 
 import bot.utils as utils
@@ -52,6 +57,22 @@ async def test_too_long_wait_is_not_awaited(monkeypatch):
     bot = FloodBot([TelegramRetryAfter(method=METHOD, message="flood", retry_after=3600)])
     assert not await safe_send(bot, 7, "x")
     assert waits == []
+
+
+async def test_network_glitch_is_retried(monkeypatch):
+    """Сбой связи с Telegram в момент оплаты криптой: сообщение с ключом терялось."""
+    waits: list[float] = []
+    monkeypatch.setattr(utils.asyncio, "sleep", await no_sleep(waits))
+    bot = FloodBot(
+        [
+            TelegramNetworkError(method=METHOD, message="timeout"),
+        ]
+    )
+    assert await safe_send(bot, 7, "ваш ключ")
+    assert bot.sent == [7] and waits == [utils.NETWORK_RETRY_DELAY]
+
+    bot = FloodBot([TelegramServerError(method=METHOD, message="Bad Gateway") for _ in range(2)])
+    assert not await safe_send(bot, 7, "ваш ключ")
 
 
 async def test_blocked_user_is_not_retried(monkeypatch):

@@ -498,10 +498,12 @@ class Database:
 
     async def confirm_web_login(self, token: str, user_id: int) -> bool:
         async with self._tx() as conn:
+            # Повторное нажатие тем же человеком — тоже успех, а не «ссылка устарела».
+            # Подтвердить вход другим аккаунтом по-прежнему нельзя
             cur = await conn.execute(
-                "UPDATE web_logins SET user_id=? WHERE token=? AND user_id IS NULL "
-                "AND expires_at > ?",
-                (user_id, token, _iso(utcnow())),
+                "UPDATE web_logins SET user_id=? WHERE token=? "
+                "AND (user_id IS NULL OR user_id=?) AND expires_at > ?",
+                (user_id, token, user_id, _iso(utcnow())),
             )
             return cur.rowcount > 0
 
@@ -648,7 +650,11 @@ class Database:
         return await self.get_client_key(user_id)  # type: ignore[return-value]
 
     async def rotate_client_key(self, user_id: int) -> str:
-        """Перевыпуск: старый ключ сразу перестаёт работать."""
+        """Перевыпуск: старый ключ сразу перестаёт работать.
+
+        Заодно закрываются входы на сайт: ключ перевыпускают, когда доступ мог попасть
+        к чужому, а сайт показывает ключ — иначе чужой браузер сразу увидел бы новый.
+        """
         key = CLIENT_KEY_PREFIX + secrets.token_urlsafe(32)
         async with self._tx() as conn:
             await conn.execute(
@@ -657,6 +663,7 @@ class Database:
                 "created_at=excluded.created_at",
                 (user_id, key, _iso(utcnow())),
             )
+            await conn.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
         return key
 
     async def user_by_client_key(self, key: str) -> int | None:

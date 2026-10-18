@@ -3,6 +3,7 @@
 Эмодзи используются скупо: только там, где они несут смысл (успешная оплата, предупреждение).
 """
 
+from datetime import timedelta
 from html import escape
 
 from bot.catalog import (
@@ -30,7 +31,8 @@ def tariff_name(code: str) -> str:
 
 
 def days_left(sub: Subscription) -> int:
-    return max(0, (sub.expires_at - utcnow()).days)
+    # Вверх: сразу после покупки 30 дней — это 30, а не 29; в последние сутки — 1, а не 0
+    return max(0, -(-(sub.expires_at - utcnow()) // timedelta(days=1)))
 
 
 def progress_bar(left: int, total: int, width: int = 10) -> str:

@@ -4,7 +4,13 @@ from datetime import datetime
 from html import escape
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, User
 
 from bot.config import Settings
@@ -12,6 +18,7 @@ from bot.config import Settings
 logger = logging.getLogger(__name__)
 
 MAX_RETRY_AFTER = 60  # дольше не ждём: обработчик и рассылка не должны висеть минутами
+NETWORK_RETRY_DELAY = 3
 
 
 def fmt_dt(dt: datetime) -> str:
@@ -24,15 +31,18 @@ async def show(
     """Показывает раздел: редактирует текущее сообщение или, если нельзя, шлёт новое."""
     message = callback.message
     sent = False
-    if isinstance(message, Message) and message.text is not None:
-        try:
-            await message.edit_text(text, reply_markup=markup)
-            sent = True
-        except TelegramBadRequest as e:
-            sent = "message is not modified" in str(e)
-    if not sent:
-        await callback.bot.send_message(callback.from_user.id, text, reply_markup=markup)
-    await safe_answer(callback)
+    try:
+        if isinstance(message, Message) and message.text is not None:
+            try:
+                await message.edit_text(text, reply_markup=markup)
+                sent = True
+            except TelegramBadRequest as e:
+                sent = "message is not modified" in str(e)
+        if not sent:
+            await callback.bot.send_message(callback.from_user.id, text, reply_markup=markup)
+    finally:
+        # даже при сбое Telegram отвечаем на нажатие, иначе кнопка крутится у клиента
+        await safe_answer(callback)
 
 
 async def safe_answer(callback: CallbackQuery, text: str | None = None, **kwargs) -> None:
@@ -55,6 +65,13 @@ async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
                 logger.warning("Не удалось отправить сообщение %s: %s", chat_id, e)
                 return False
             await asyncio.sleep(e.retry_after)
+        except (TelegramNetworkError, TelegramServerError) as e:
+            # Временный сбой связи с Telegram: сообщение с ключом после оплаты иначе
+            # терялось бы. Лучше редкий дубль, чем клиент без ключа
+            if attempt:
+                logger.warning("Не удалось отправить сообщение %s: %s", chat_id, e)
+                return False
+            await asyncio.sleep(NETWORK_RETRY_DELAY)
         except TelegramAPIError as e:
             logger.warning("Не удалось отправить сообщение %s: %s", chat_id, e)
             return False

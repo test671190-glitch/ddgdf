@@ -28,10 +28,11 @@ from bot.catalog import (
     VIDEO_MODELS,
 )
 from bot.config import Settings
-from bot.db import Database, utcnow
+from bot.db import Database
 from bot.services.access import shown_key
 from bot.services.crypto import CryptoPayments
 from bot.services.cryptopay import CryptoPayError
+from bot.texts import days_left
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,7 @@ class WebApp:
                 "tariff": sub.tariff,
                 "title": tariff.title if tariff else sub.tariff,
                 "expires_at": sub.expires_at.isoformat(),
-                "days_left": max(0, (sub.expires_at - utcnow()).days),
+                "days_left": days_left(sub),
                 "active": sub.is_active,
             }
         return web.json_response(
