@@ -40,10 +40,12 @@ PAYLOAD_PREFIX = "tariff:"
 CURRENCY = "XTR"  # Telegram Stars
 
 
-def tariff_from_payload(payload: str) -> Tariff | None:
+def tariff_from_payload(
+    payload: str, catalog: dict[str, Tariff] = TARIFFS_ON_SALE
+) -> Tariff | None:
     if not payload.startswith(PAYLOAD_PREFIX):
         return None
-    return TARIFFS_ON_SALE.get(payload.removeprefix(PAYLOAD_PREFIX))
+    return catalog.get(payload.removeprefix(PAYLOAD_PREFIX))
 
 
 @router.message(Command("tariffs"))
@@ -175,7 +177,8 @@ async def on_successful_payment(
 ) -> None:
     payment = message.successful_payment
     user = message.from_user
-    tariff = tariff_from_payload(payment.invoice_payload)
+    # Деньги уже списаны: тариф могли снять с продажи после pre_checkout — начисляем всё равно
+    tariff = tariff_from_payload(payment.invoice_payload, TARIFFS)
     if tariff is None:
         logger.error("Неизвестный payload платежа: %s", payment.invoice_payload)
         await notify_admins(
@@ -190,13 +193,30 @@ async def on_successful_payment(
         )
         return
 
-    act = await db.activate_paid(
-        user.id,
-        tariff.code,
-        settings.subscription_days,
-        payment.total_amount,
-        payment.telegram_payment_charge_id,
-    )
+    try:
+        act = await db.activate_paid(
+            user.id,
+            tariff.code,
+            settings.subscription_days,
+            payment.total_amount,
+            payment.telegram_payment_charge_id,
+        )
+    except Exception:
+        # Telegram второй раз этот апдейт не пришлёт: без уведомления оплата потеряется
+        logger.exception("Не удалось записать платёж %s", payment.telegram_payment_charge_id)
+        await notify_admins(
+            bot,
+            settings,
+            f"❗️ Оплата от <code>{user.id}</code> не записана из-за ошибки базы: "
+            f"тариф <b>{tariff.title}</b>, ⭐ {payment.total_amount}, "
+            f"charge_id <code>{escape(payment.telegram_payment_charge_id)}</code>.\n"
+            f"Начислите вручную: <code>/grant {user.id} {tariff.code}</code>",
+        )
+        await message.answer(
+            "Оплата получена, но доступ не выдался из-за сбоя. Мы уже знаем и начислим его "
+            "вручную, напишите в /paysupport, если что-то не так."
+        )
+        return
     if act is None:
         logger.warning("Повторный платёж %s", payment.telegram_payment_charge_id)
         return
@@ -208,4 +228,14 @@ async def on_successful_payment(
         f"💰 Оплата: {user_label(user)} (<code>{user.id}</code>), тариф <b>{tariff.title}</b>, "
         f"⭐ {payment.total_amount}\n"
         f"charge_id: <code>{escape(payment.telegram_payment_charge_id)}</code>",
+    )
+
+
+@router.message(F.refunded_payment)
+async def on_refunded_payment(message: Message) -> None:
+    """Служебное сообщение Telegram о возврате Stars. Клиента уже уведомил /refund —
+    без этого обработчика сообщение попадало в fallback и клиент получал «Не понял запрос»."""
+    logger.info(
+        "Возврат Stars подтверждён Telegram: %s",
+        message.refunded_payment.telegram_payment_charge_id,
     )

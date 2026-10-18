@@ -143,6 +143,8 @@ class Payment:
 class Refund:
     user_id: int
     revoked_key: str | None
+    # False — неизвестно, входит ли платёж в текущий период: дни не списаны, проверить вручную
+    adjusted: bool = True
 
 
 @dataclass(frozen=True)
@@ -282,9 +284,11 @@ class Database:
         if current and current.tariff == tariff:
             key = current.key
         else:
-            if current:
-                revoked = await self._revoke(current.id)
             key = await self._take_free_key(user_id, tariff, now)
+            # Старый ключ снимаем, только когда есть новый: при пустом пуле клиент до выдачи
+            # ключа нового тарифа работает по прежнему, а не остаётся совсем без доступа
+            if current and key is not None:
+                revoked = await self._revoke(current.id)
         return Activation(tariff, expires, key, revoked, extended)
 
     async def _take_free_key(self, user_id: int, tariff: str, now: datetime) -> str | None:
@@ -300,20 +304,26 @@ class Database:
         )
         return row["key"]
 
-    async def _revoke(self, key_id: int) -> str | None:
+    async def _revoke(self, key_id: int, reuse: bool = True) -> str | None:
         """Снимает ключ с пользователя. Возвращает ключ, если его надо отключить у провайдера.
 
         Ключ, который клиент ни разу не видел (работа через наш эндпоинт), безопасно
         вернуть в пул: тогда возвращается None и делать ничего не нужно.
+        reuse=False — ключ заменяют потому, что он не работает: в пул его не возвращаем.
         """
         row = await self._one("SELECT key, exposed FROM api_keys WHERE id=?", (key_id,))
         if row is None:
             return None
         if not row["exposed"]:
-            await self.conn.execute(
-                "UPDATE api_keys SET status='free', user_id=NULL, assigned_at=NULL WHERE id=?",
-                (key_id,),
-            )
+            if reuse:
+                await self.conn.execute(
+                    "UPDATE api_keys SET status='free', user_id=NULL, assigned_at=NULL WHERE id=?",
+                    (key_id,),
+                )
+            else:
+                await self.conn.execute(
+                    "UPDATE api_keys SET status='revoked' WHERE id=?", (key_id,)
+                )
             return None
         await self.conn.execute("UPDATE api_keys SET status='revoke' WHERE id=?", (key_id,))
         return row["key"]
@@ -328,40 +338,50 @@ class Database:
             existing = await self._one("SELECT * FROM api_keys WHERE key=?", (key,))
             if existing and existing["status"] == "active" and existing["user_id"] != user_id:
                 raise KeyConflictError(f"Ключ уже выдан пользователю {existing['user_id']}")
+            if existing and existing["status"] in ("revoke", "revoked"):
+                # такой ключ видел прежний клиент и он ждёт (или прошёл) отключения
+                raise KeyConflictError("Ключ отозван — выдайте другой")
             current = await self.get_active_key(user_id)
             revoked = None
             if current and current.key != key:
-                revoked = await self._revoke(current.id)
+                # Замена ключа того же тарифа — обычно потому, что он не работает: в пул его не
+                # возвращаем. Ключ прежнего тарифа (остался после смены тарифа) исправен
+                revoked = await self._revoke(current.id, reuse=current.tariff != sub.tariff)
             await conn.execute(
                 "INSERT INTO api_keys (tariff, key, user_id, status, assigned_at, exposed) "
                 "VALUES (?, ?, ?, 'active', ?, ?) ON CONFLICT(key) DO UPDATE SET "
                 "tariff=excluded.tariff, user_id=excluded.user_id, status='active', "
-                "assigned_at=excluded.assigned_at, exposed=excluded.exposed",
+                "assigned_at=excluded.assigned_at, "
+                # если клиент уже видел ключ, он остаётся «засвеченным»
+                "exposed=MAX(api_keys.exposed, excluded.exposed)",
                 (sub.tariff, key, user_id, _iso(now), 0 if self.hide_keys else 1),
             )
             return sub, revoked
 
-    async def assign_waiting(self, tariff: str) -> list[tuple[int, str]]:
+    async def assign_waiting(self, tariff: str) -> list[tuple[int, str, str | None]]:
         """Раздаёт свободные ключи тем, кто оплатил тариф, пока пул был пуст.
 
-        Возвращает [(user_id, ключ провайдера)] — им надо отправить ключ. Первыми получают
-        те, у кого подписка кончается раньше (то есть купившие раньше).
+        Возвращает [(user_id, ключ провайдера, ключ на отключение)] — им надо отправить ключ.
+        Третий элемент — ключ прежнего тарифа, если клиент сменил тариф при пустом пуле.
+        Первыми получают те, у кого подписка кончается раньше (то есть купившие раньше).
         """
         now = utcnow()
         async with self._tx():
             rows = await self._all(
                 "SELECT s.user_id FROM subscriptions s WHERE s.tariff=? AND s.expires_at > ? "
                 "AND NOT EXISTS (SELECT 1 FROM api_keys k "
-                "WHERE k.user_id=s.user_id AND k.status='active') "
+                "WHERE k.user_id=s.user_id AND k.status='active' AND k.tariff=s.tariff) "
                 "ORDER BY s.expires_at, s.user_id",
                 (tariff, _iso(now)),
             )
             assigned = []
             for row in rows:
+                old = await self.get_active_key(row["user_id"])
                 key = await self._take_free_key(row["user_id"], tariff, now)
                 if key is None:
                     break
-                assigned.append((row["user_id"], key))
+                revoked = await self._revoke(old.id) if old else None
+                assigned.append((row["user_id"], key, revoked))
             return assigned
 
     async def add_keys(self, tariff: str, keys: list[str]) -> int:
@@ -543,7 +563,17 @@ class Database:
             pay = await self.get_payment(charge_id)
             if pay is None or pay.refunded:
                 return None
+            # Какой период оплатил этот платёж, база не помнит. Отнимаем дни, только если он
+            # точно входит в текущую подписку: иначе возврат старого платежа обрезал бы новый,
+            # отдельно оплаченный период
+            chain = await self._all(
+                "SELECT tariff, created_at FROM payments WHERE user_id=? AND refunded=0 "
+                "AND id >= (SELECT id FROM payments WHERE charge_id=?) ORDER BY id",
+                (pay.user_id, charge_id),
+            )
             await conn.execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge_id,))
+            if not _continuous(chain, pay.tariff, timedelta(days=days)):
+                return Refund(pay.user_id, None, adjusted=False)
             sub = await self.get_subscription(pay.user_id)
             revoked = None
             if sub and sub.tariff == pay.tariff:
@@ -571,10 +601,13 @@ class Database:
         )
         return [_subscription(r) for r in rows]
 
-    async def mark_reminded(self, user_id: int) -> None:
+    async def mark_reminded(self, user_id: int, expires_at: datetime) -> None:
+        """Отмечает напоминание о периоде, который кончается в expires_at. Если клиент
+        успел продлить подписку, пока шла рассылка, флаг нового периода не трогаем."""
         async with self._tx() as conn:
             await conn.execute(
-                "UPDATE subscriptions SET notified_soon=1 WHERE user_id=?", (user_id,)
+                "UPDATE subscriptions SET notified_soon=1 WHERE user_id=? AND expires_at=?",
+                (user_id, _iso(expires_at)),
             )
 
     async def expire_due(self) -> list[tuple[Subscription, str | None]]:
@@ -656,6 +689,19 @@ class Database:
             "stars": pays["stars"] if pays else 0,
             "crypto": {r["tariff"]: r["n"] for r in crypto},
         }
+
+
+def _continuous(chain: list[aiosqlite.Row], tariff: str, period: timedelta) -> bool:
+    """Платёж chain[0] и все последующие — одно непрерывное продление того же тарифа.
+
+    Каждый следующий платёж того же тарифа (при смене тарифа старые дни сгорают) и сделан
+    раньше, чем мог кончиться предыдущий период. Тогда дни chain[0] ещё в текущей подписке.
+    """
+    for prev, nxt in zip(chain, chain[1:], strict=False):
+        prev_at = datetime.fromisoformat(prev["created_at"])
+        if nxt["tariff"] != tariff or datetime.fromisoformat(nxt["created_at"]) >= prev_at + period:
+            return False
+    return True
 
 
 def _subscription(row: aiosqlite.Row) -> Subscription:

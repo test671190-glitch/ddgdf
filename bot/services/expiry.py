@@ -7,10 +7,11 @@ from datetime import timedelta
 from aiogram import Bot
 
 from bot import texts
+from bot.catalog import TARIFFS
 from bot.config import Settings
 from bot.db import Database
 from bot.keyboards.inline import renew_keyboard
-from bot.services.access import revoke_notice
+from bot.services.access import deliver_waiting, revoke_notice
 from bot.utils import notify_admins, safe_send
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ async def check_subscriptions(bot: Bot, db: Database, settings: Settings) -> Non
         await safe_send(
             bot, sub.user_id, texts.reminder(sub), reply_markup=renew_keyboard(sub.tariff)
         )
-        await db.mark_reminded(sub.user_id)
+        await db.mark_reminded(sub.user_id, sub.expires_at)
 
     for sub, key in await db.expire_due():
         await safe_send(
@@ -29,6 +30,11 @@ async def check_subscriptions(bot: Bot, db: Database, settings: Settings) -> Non
         )
         if key:
             await notify_admins(bot, settings, revoke_notice(sub.user_id, key, "подписка истекла"))
+
+    # Ключи, вернувшиеся в пул (окончание подписки, смена тарифа, возврат), сразу получают
+    # те, кто оплатил при пустом пуле
+    for tariff in TARIFFS:
+        await deliver_waiting(bot, db, settings, tariff)
 
 
 async def expiry_loop(bot: Bot, db: Database, settings: Settings, interval: int = 600) -> None:

@@ -89,8 +89,22 @@ async def test_reminder_sent_once(db):
     await db.grant(1, "pro", 2)
     due = await db.due_reminders(timedelta(days=3))
     assert [s.user_id for s in due] == [1]
-    await db.mark_reminded(1)
+    await db.mark_reminded(1, due[0].expires_at)
     assert await db.due_reminders(timedelta(days=3)) == []
+
+
+async def test_renewal_during_reminder_keeps_next_reminder(db):
+    """Клиент продлил подписку, пока бот рассылал напоминания. Отметка о старом напоминании
+    не должна гасить напоминание о новом периоде."""
+    await db.grant(1, "pro", 2)
+    (due,) = await db.due_reminders(timedelta(days=3))
+    await db.activate_paid(1, "pro", 30, 1, "c1")  # продлил: флаг сброшен, 32 дня
+    await db.mark_reminded(1, due.expires_at)  # рассылка отмечает уже устаревший период
+    await db.conn.execute(
+        "UPDATE subscriptions SET expires_at=? WHERE user_id=1",
+        (_iso(utcnow() + timedelta(days=2)),),
+    )
+    assert [s.user_id for s in await db.due_reminders(timedelta(days=3))] == [1]
 
 
 async def test_refund_ends_single_period(db):
@@ -100,6 +114,55 @@ async def test_refund_ends_single_period(db):
     assert refund.revoked_key == "k1"
     assert not (await db.get_subscription(1)).is_active
     assert await db.refund("c1", 30) is None
+
+
+async def expire_now(db, user_id, ago=timedelta(minutes=1)):
+    await db.conn.execute(
+        "UPDATE subscriptions SET expires_at=? WHERE user_id=?", (_iso(utcnow() - ago), user_id)
+    )
+    await db.conn.commit()
+
+
+async def test_refund_of_old_payment_keeps_new_period(db):
+    """Старый период давно кончился, клиент купил снова. Возврат старого платежа не должен
+    отнимать новый оплаченный период."""
+    await db.add_keys("pro", ["k1", "k2"])
+    await db.activate_paid(1, "pro", 30, 2541, "old")
+    await db.conn.execute(
+        "UPDATE payments SET created_at=? WHERE charge_id='old'",
+        (_iso(utcnow() - timedelta(days=90)),),
+    )
+    await expire_now(db, 1, timedelta(days=60))
+    await db.expire_due()
+    await db.activate_paid(1, "pro", 30, 2541, "new")
+    refund = await db.refund("old", 30)
+    assert not refund.adjusted and refund.revoked_key is None
+    assert (await db.get_subscription(1)).is_active
+    assert await db.get_active_key(1) is not None
+
+
+async def test_refund_of_payment_burned_by_tariff_switch(db):
+    """Pro → Unlimited (дни Pro сгорели) → снова Pro. Возврат первого Pro не трогает второй."""
+    await db.add_keys("pro", ["k1", "k2"])
+    await db.add_keys("unlimited", ["u1"])
+    await db.activate_paid(1, "pro", 30, 2541, "p1")
+    await db.activate_paid(1, "unlimited", 30, 6160, "u1")
+    await db.activate_paid(1, "pro", 30, 2541, "p2")
+    refund = await db.refund("p1", 30)
+    assert not refund.adjusted
+    assert (await db.get_subscription(1)).is_active
+
+
+async def test_refund_of_first_of_two_renewals_takes_its_days(db):
+    """Клиент случайно оплатил дважды подряд. Возврат любого из платежей списывает 30 дней."""
+    await db.add_keys("pro", ["k1"])
+    await db.activate_paid(1, "pro", 30, 2541, "p1")
+    second = await db.activate_paid(1, "pro", 30, 2541, "p2")
+    refund = await db.refund("p1", 30)
+    assert refund.adjusted
+    sub = await db.get_subscription(1)
+    assert sub.expires_at == second.expires_at - timedelta(days=30)
+    assert (await db.get_active_key(1)).key == "k1"
 
 
 async def test_stats(db):
@@ -249,7 +312,7 @@ async def test_waiting_subscribers_get_keys_after_pool_refill(db):
     await db.add_keys("pro", ["k1", "k2", "k3"])
     assigned = await db.assign_waiting("pro")
 
-    assert assigned == [(1, "k1")]
+    assert assigned == [(1, "k1", None)]
     assert (await db.get_active_key(1)).key == "k1"
     assert (await db.get_active_key(3)).key == "k-old"
     assert await db.get_active_key(2) is None
@@ -262,8 +325,98 @@ async def test_waiting_subscribers_more_than_keys(db):
         await db.grant(user, "pro", 30)
     await db.add_keys("pro", ["k1"])
     assigned = await db.assign_waiting("pro")
-    assert assigned == [(1, "k1")]  # кто раньше купил — тот раньше получил
+    assert assigned == [(1, "k1", None)]  # кто раньше купил — тот раньше получил
     assert await db.assign_waiting("pro") == []
+
+
+async def test_givekey_replacement_does_not_recycle_bad_key():
+    """Провайдер отклонил ключ, админ выдал новый через /givekey. Отклонённый ключ не должен
+    вернуться в пул и достаться следующему покупателю."""
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    await db.add_keys("pro", ["dead-key"])
+    await db.activate_paid(1, "pro", 30, 2541, "c1")
+    await db.assign_key(1, "good-key")
+    assert (await db.key_stats())["pro"] == {"active": 1, "revoked": 1}
+    assert (await db.activate_paid(2, "pro", 30, 2541, "c2")).key is None
+    await db.close()
+
+
+async def test_givekey_after_tariff_switch_returns_old_key_to_pool():
+    """Ключ прежнего тарифа (клиент сменил тариф при пустом пуле) исправен: после /givekey
+    он возвращается в пул."""
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    await db.add_keys("pro", ["k-pro"])
+    await db.activate_paid(1, "pro", 30, 2541, "c1")
+    await db.activate_paid(1, "unlimited", 30, 6160, "c2")  # пул Unlimited пуст
+    await db.assign_key(1, "u-manual")
+    assert (await db.key_stats())["pro"] == {"free": 1}
+    await db.close()
+
+
+async def test_givekey_keeps_key_marked_as_seen(tmp_path):
+    """Клиент видел ключ, пока эндпоинт был выключен. Повторная выдача того же ключа через
+    /givekey после включения эндпоинта не должна снимать отметку «видел»: иначе после
+    окончания подписки ключ молча уйдёт следующему покупателю."""
+    path = str(tmp_path / "bot.db")
+    old = Database(path, hide_keys=False)
+    await old.connect()
+    await old.add_keys("pro", ["k1"])
+    await old.activate_paid(1, "pro", 30, 1, "c1")
+    await old.close()
+
+    db = Database(path, hide_keys=True)
+    await db.connect()
+    await db.assign_key(1, "k1")
+    await expire_now(db, 1)
+    assert [key for _, key in await db.expire_due()] == ["k1"]
+    await db.close()
+
+
+async def test_givekey_refuses_key_waiting_for_revocation(db):
+    """Ключ в списке на отключение нельзя выдать снова: он пропал бы из /revoke_list,
+    так и не отключённый у провайдера."""
+    await db.add_keys("pro", ["k1"])
+    await db.activate_paid(1, "pro", 30, 1, "c1")
+    await expire_now(db, 1)
+    await db.expire_due()
+    await db.grant(2, "pro", 30)
+    with pytest.raises(KeyConflictError):
+        await db.assign_key(2, "k1")
+    assert [k.key for k in await db.keys_to_revoke()] == ["k1"]
+
+
+async def test_tariff_switch_with_empty_pool_keeps_working_key():
+    """Клиент на Pro оплатил Unlimited, а пул Unlimited пуст. Рабочий ключ Pro не должен
+    уйти следующему покупателю, пока ключ Unlimited не выдан."""
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    await db.add_keys("pro", ["k-pro"])
+    await db.activate_paid(1, "pro", 30, 2541, "c1")
+    act = await db.activate_paid(1, "unlimited", 30, 6160, "c2")
+    assert act.key is None and act.revoked_key is None
+    assert (await db.get_active_key(1)).key == "k-pro"
+    assert (await db.activate_paid(2, "pro", 30, 2541, "c3")).key is None
+
+    # пул Unlimited пополнили: клиент получает ключ, ключ Pro возвращается в пул
+    await db.add_keys("unlimited", ["k-unl"])
+    assert await db.assign_waiting("unlimited") == [(1, "k-unl", None)]
+    assert (await db.get_active_key(1)).key == "k-unl"
+    assert (await db.key_stats())["pro"] == {"free": 1}
+    # и достаётся покупателю Pro, который ждал
+    assert await db.assign_waiting("pro") == [(2, "k-pro", None)]
+    await db.close()
+
+
+async def test_waiting_after_switch_reports_seen_key_for_revocation(db):
+    """Без эндпоинта клиент видел ключ прежнего тарифа: при выдаче нового его надо отключить."""
+    await db.add_keys("pro", ["k-pro"])
+    await db.activate_paid(1, "pro", 30, 2541, "c1")
+    await db.activate_paid(1, "unlimited", 30, 6160, "c2")
+    await db.add_keys("unlimited", ["k-unl"])
+    assert await db.assign_waiting("unlimited") == [(1, "k-unl", "k-pro")]
+    assert [k.key for k in await db.keys_to_revoke()] == ["k-pro"]
 
 
 async def test_client_keys(db):

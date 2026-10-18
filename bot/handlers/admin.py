@@ -3,7 +3,7 @@
 from html import escape
 
 from aiogram import Bot, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
@@ -13,13 +13,15 @@ from bot.config import Settings
 from bot.db import CRYPTO_PREFIX, Database, KeyConflictError
 from bot.filters.admin import IsAdmin
 from bot.keyboards.inline import profile_keyboard
-from bot.services.access import deliver_activation, revoke_notice, shown_key
+from bot.services.access import deliver_activation, deliver_waiting, revoke_notice, shown_key
 from bot.utils import fmt_dt, notify_admins, safe_send
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
 
 TARIFF_CODES = ", ".join(TARIFFS)
+MAX_GRANT_DAYS = 3650
+REVOKE_LIST_CHARS = 3800  # с запасом до лимита Telegram 4096 на строку «…и ещё N»
 
 ADMIN_HELP = (
     "🛠 <b>Админка</b>\n\n"
@@ -81,34 +83,39 @@ async def cmd_addkeys(
         await message.answer(
             f"Формат:\n<code>/addkeys pro\nключ1\nключ2</code>\n\nТарифы: {TARIFF_CODES}"
         )
+        if len(parts) > 1:  # опечатка в тарифе, а ключи уже в чате
+            await _delete_secret(message)
         return
     tariff, keys = parts[0], parts[1:]
     added = await db.add_keys(tariff, keys)
     # Кто оплатил, пока пул был пуст, получает ключ сразу, без ручного /givekey
-    waiting = await db.assign_waiting(tariff)
+    delivered = await deliver_waiting(bot, db, settings, tariff)
     title = TARIFFS[tariff].title
-    for user_id, upstream_key in waiting:
-        visible = await shown_key(db, settings, user_id, upstream_key)
-        await safe_send(
-            bot,
-            user_id,
-            texts.key_issued(title, visible, settings),
-            reply_markup=profile_keyboard(
-                has_subscription=True, key=visible, can_rotate=settings.uses_gateway
-            ),
-        )
     skipped = len(keys) - added
     text = f"✅ Добавлено ключей для {title}: {added}"
     if skipped:
         text += f"\nПропущено дублей: {skipped}"
-    if waiting:
-        text += f"\nСразу выдано ожидавшим оплатившим: {len(waiting)}"
+    if delivered:
+        text += f"\nСразу выдано ожидавшим оплатившим: {delivered}"
     await message.answer(text)
-    # Сообщение содержит ключи — удаляем его из чата
+    await _delete_secret(message)
+
+
+async def _delete_secret(message: Message) -> None:
+    """Сообщение содержит ключи провайдера — убираем его из чата."""
     try:
         await message.delete()
     except TelegramBadRequest:
         pass
+
+
+def _parse_user_id(value: str) -> int | None:
+    # isdecimal, а не isdigit: «²» — digit, но int() его не разбирает. Длину проверяем до int():
+    # SQLite хранит не больше 64 бит, большее число роняет запрос без ответа админу
+    if not value.isdecimal() or len(value) > 19:
+        return None
+    user_id = int(value)
+    return user_id if user_id < 2**63 else None
 
 
 @router.message(Command("givekey"))
@@ -116,10 +123,13 @@ async def cmd_givekey(
     message: Message, command: CommandObject, bot: Bot, db: Database, settings: Settings
 ) -> None:
     parts = (command.args or "").split()
-    if len(parts) != 2 or not parts[0].isdecimal():
+    if parts:
+        await _delete_secret(message)
+    user_id = _parse_user_id(parts[0]) if len(parts) == 2 else None
+    if user_id is None:
         await message.answer("Формат: <code>/givekey user_id ключ</code>")
         return
-    user_id, key = int(parts[0]), parts[1]
+    key = parts[1]
     try:
         result = await db.assign_key(user_id, key)
     except KeyConflictError as e:
@@ -153,16 +163,20 @@ async def cmd_grant(
     message: Message, command: CommandObject, bot: Bot, db: Database, settings: Settings
 ) -> None:
     parts = (command.args or "").split()
-    if len(parts) not in (2, 3) or not parts[0].isdecimal() or parts[1] not in TARIFFS:
+    user_id = _parse_user_id(parts[0]) if len(parts) in (2, 3) else None
+    if user_id is None or parts[1] not in TARIFFS:
         await message.answer(
             f"Формат: <code>/grant user_id тариф [дней]</code>\nТарифы: {TARIFF_CODES}"
         )
         return
-    # isdecimal, а не isdigit: «²» — digit, но int() его не разбирает
-    if len(parts) == 3 and (not parts[2].isdecimal() or int(parts[2]) == 0):
-        await message.answer("Количество дней должно быть положительным числом")
+    if len(parts) == 3 and (
+        not parts[2].isdecimal() or len(parts[2]) > 5 or not 0 < int(parts[2]) <= MAX_GRANT_DAYS
+    ):
+        await message.answer(
+            f"Количество дней должно быть положительным числом, не больше {MAX_GRANT_DAYS}"
+        )
         return
-    user_id, tariff = int(parts[0]), parts[1]
+    tariff = parts[1]
     days = int(parts[2]) if len(parts) == 3 else settings.subscription_days
     act = await db.grant(user_id, tariff, days)
     await deliver_activation(bot, db, settings, user_id, act, paid=False)
@@ -174,11 +188,10 @@ async def cmd_grant(
 
 @router.message(Command("user"))
 async def cmd_user(message: Message, command: CommandObject, db: Database) -> None:
-    arg = (command.args or "").strip()
-    if not arg.isdecimal():
+    user_id = _parse_user_id((command.args or "").strip())
+    if user_id is None:
         await message.answer("Формат: <code>/user user_id</code>")
         return
-    user_id = int(arg)
     user = await db.get_user(user_id)
     sub = await db.get_subscription(user_id)
     key = await db.get_active_key(user_id)
@@ -225,18 +238,41 @@ async def cmd_refund(
                 user_id=payment.user_id, telegram_payment_charge_id=charge_id
             )
         except TelegramBadRequest as e:
-            await message.answer(f"❌ Telegram отказал в возврате: {escape(e.message)}")
+            # Прошлая попытка вернула Stars, но ответ Telegram до нас не дошёл:
+            # деньги уже у клиента, осталось закрыть подписку
+            if "CHARGE_ALREADY_REFUNDED" not in e.message:
+                await message.answer(f"❌ Telegram отказал в возврате: {escape(e.message)}")
+                return
+        except TelegramNetworkError as e:
+            await message.answer(
+                f"⚠️ Telegram не ответил ({escape(e.message)}). Stars могли уже вернуться — "
+                f"повторите <code>/refund {escape(charge_id)}</code>, дважды они не спишутся."
+            )
             return
     refund = await db.refund(charge_id, settings.subscription_days)
+    if refund is None:  # тот же /refund, отправленный параллельно, успел раньше
+        await message.answer("Этот платёж уже возвращён")
+        return
     amount = f"${TARIFFS[payment.tariff].price_usd}" if is_crypto else f"⭐ {payment.stars}"
+    if refund.adjusted:
+        days_note = "дни списаны."
+    else:
+        days_note = (
+            "дни НЕ списаны: этот платёж, похоже, оплатил уже прошедший период (после него "
+            "был перерыв или смена тарифа). Проверьте подписку: "
+            f"<code>/user {payment.user_id}</code>"
+        )
     await message.answer(
-        f"✅ Возврат {amount} пользователю {payment.user_id} оформлен, дни списаны."
+        f"✅ Возврат {amount} пользователю {payment.user_id} оформлен, {days_note}"
         + ("\n⚠️ Крипту верните вручную через @CryptoBot." if is_crypto else "")
     )
     await safe_send(
-        bot, payment.user_id, f"↩️ Платёж возвращён: {amount}. Подписка скорректирована."
+        bot,
+        payment.user_id,
+        f"↩️ Платёж возвращён: {amount}."
+        + (" Подписка скорректирована." if refund.adjusted else ""),
     )
-    if refund and refund.revoked_key:
+    if refund.revoked_key:
         await notify_admins(
             bot, settings, revoke_notice(payment.user_id, refund.revoked_key, "возврат")
         )
@@ -249,9 +285,18 @@ async def cmd_revoke_list(message: Message, db: Database) -> None:
         await message.answer("Нет ключей для отключения 👌")
         return
     lines = ["🔒 <b>Деактивируйте в панели провайдера</b>, затем /revoked ключ:", ""]
-    lines += [f"<code>{escape(k.key)}</code> — {k.tariff}, user {k.user_id}" for k in keys[:50]]
-    if len(keys) > 50:
-        lines.append(f"…и ещё {len(keys) - 50}")
+    size = sum(len(line) + 1 for line in lines)
+    shown = 0
+    for k in keys:
+        line = f"<code>{escape(k.key)}</code> — {k.tariff}, user {k.user_id}"
+        # Telegram не принимает сообщения длиннее 4096 символов
+        if shown == 50 or size + len(line) + 1 > REVOKE_LIST_CHARS:
+            break
+        lines.append(line)
+        size += len(line) + 1
+        shown += 1
+    if len(keys) > shown:
+        lines.append(f"…и ещё {len(keys) - shown}")
     await message.answer("\n".join(lines))
 
 
