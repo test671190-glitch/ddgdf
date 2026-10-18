@@ -1,14 +1,17 @@
+import asyncio
 import logging
 from datetime import datetime
 from html import escape
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, User
 
 from bot.config import Settings
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRY_AFTER = 60  # дольше не ждём: обработчик и рассылка не должны висеть минутами
 
 
 def fmt_dt(dt: datetime) -> str:
@@ -41,12 +44,21 @@ async def safe_answer(callback: CallbackQuery, text: str | None = None, **kwargs
 
 
 async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
-    try:
-        await bot.send_message(chat_id, text, **kwargs)
-        return True
-    except TelegramAPIError as e:
-        logger.warning("Не удалось отправить сообщение %s: %s", chat_id, e)
-        return False
+    for attempt in range(2):
+        try:
+            await bot.send_message(chat_id, text, **kwargs)
+            return True
+        except TelegramRetryAfter as e:
+            # Лимит Telegram на частоту сообщений (рассылка напоминаний, выдача ключей
+            # ожидающим): ждём, сколько он просит, и пробуем ещё раз, а не теряем сообщение
+            if attempt or e.retry_after > MAX_RETRY_AFTER:
+                logger.warning("Не удалось отправить сообщение %s: %s", chat_id, e)
+                return False
+            await asyncio.sleep(e.retry_after)
+        except TelegramAPIError as e:
+            logger.warning("Не удалось отправить сообщение %s: %s", chat_id, e)
+            return False
+    return False
 
 
 async def notify_admins(bot: Bot, settings: Settings, text: str, **kwargs) -> None:
