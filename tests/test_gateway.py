@@ -1,11 +1,15 @@
 """Собственный эндпоинт: проверка ключа, подписки и прозрачная пересылка к провайдеру."""
 
+import asyncio
+import time
 from datetime import timedelta
 
+import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import bot.gateway as gateway_module
 from bot.config import Settings
 from bot.db import Database, _iso, utcnow
 from bot.gateway import Gateway
@@ -230,3 +234,207 @@ async def test_rotated_key_stops_working(env):
     assert (
         await client.get("/v1/models", headers={"Authorization": f"Bearer {new}"})
     ).status == 200
+
+
+async def test_redirect_to_other_host_does_not_carry_provider_key(env):
+    """Провайдер отвечает 302 на чужой хост (видео на CDN). aiohttp при таком переходе убирает
+    только Authorization, и x-api-key с ключом провайдера уходил постороннему серверу.
+    Редирект на свой же адрес провайдера по-прежнему идёт с ключом."""
+    client, db = env
+    cdn_seen: list[dict] = []
+    provider_seen: list[dict] = []
+
+    async def cdn(request: web.Request) -> web.Response:
+        cdn_seen.append(dict(request.headers))
+        return web.Response(body=b"video")
+
+    cdn_app = web.Application()
+    cdn_app.router.add_get("/{tail:.*}", cdn)
+    cdn_server = TestServer(cdn_app)
+    await cdn_server.start_server()
+
+    async def provider(request: web.Request) -> web.Response:
+        provider_seen.append(dict(request.headers))
+        tail = request.match_info["tail"]
+        if tail == "videos/vid_1/content":
+            raise web.HTTPFound(str(cdn_server.make_url("/file.mp4")))
+        if tail == "models/old":
+            raise web.HTTPMovedPermanently("/api/v1/models")
+        return web.json_response({"data": []})
+
+    provider_app = web.Application()
+    provider_app.router.add_get("/api/v1/{tail:.*}", provider)
+    provider_server = TestServer(provider_app)
+    await provider_server.start_server()
+    gateway = Gateway(
+        db,
+        Settings(bot_token="1:x", api_base_url=str(provider_server.make_url("/api/v1"))),
+    )
+    gw_client = TestClient(TestServer(gateway.build()))
+    await gw_client.start_server()
+    try:
+        key = await subscriber(db)
+        auth = {"Authorization": f"Bearer {key}"}
+        resp = await gw_client.get("/v1/videos/vid_1/content", headers=auth)
+        assert resp.status == 200 and await resp.read() == b"video"
+        leaked = [h for h in cdn_seen[-1] if h.lower() in ("authorization", "x-api-key")]
+        assert leaked == []
+
+        resp = await gw_client.get("/v1/models/old", headers=auth)
+        assert resp.status == 200
+        assert provider_seen[-1]["x-api-key"] == "up-pro"
+    finally:
+        await gw_client.close()
+        await provider_server.close()
+        await cdn_server.close()
+
+
+@pytest.fixture
+async def broken_upstream():
+    """Провайдер, который обещает 1000 байт JSON, отдаёт 40 и рвёт соединение."""
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = await reader.readuntil(b"\r\n\r\n")
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                await reader.readexactly(int(line.split(b":", 1)[1]))
+        if b"stream" in head.split(b"\r\n", 1)[0]:
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            chunk = b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+            writer.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+        else:
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: 1000\r\n\r\n"
+                b'{"choices":[{"message":{"content":"trunc'
+            )
+        await writer.drain()
+        await asyncio.sleep(0.1)
+        writer.transport.abort()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    yield f"http://127.0.0.1:{port}/api/v1"
+    server.close()
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/chat/completions?stream=1"])
+async def test_upstream_cut_mid_response_is_visible_to_client(broken_upstream, path):
+    """Провайдер оборвал ответ на середине. Раньше клиент получал корректно завершённый
+    ответ 200 с обрезанным JSON или потоком без [DONE] и считал его полным."""
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    gateway = Gateway(db, Settings(bot_token="1:x", api_base_url=broken_upstream))
+    client = TestClient(TestServer(gateway.build()))
+    await client.start_server()
+    try:
+        key = await subscriber(db)
+        resp = await client.post(path, json={}, headers={"Authorization": f"Bearer {key}"})
+        with pytest.raises(aiohttp.ClientPayloadError):
+            await resp.read()
+    finally:
+        await client.close()
+        await db.close()
+
+
+async def test_slow_admin_alert_does_not_delay_client(env):
+    """Алерт админам уходит через Telegram и может идти секундами — клиент не ждёт его."""
+    client, db = env
+    gateway = next(
+        r.handler.__self__
+        for r in client.server.app.router.routes()
+        if isinstance(getattr(r.handler, "__self__", None), Gateway)
+    )
+    sent = asyncio.Event()
+
+    async def slow_alert(text: str) -> None:
+        await asyncio.sleep(2)
+        sent.set()
+
+    gateway.alert = slow_alert
+    await db.add_keys("pro", ["up-broken"])
+    await db.grant(9, "pro", 30)
+    key = await db.get_or_create_client_key(9)
+    started = time.monotonic()
+    resp = await client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
+    assert resp.status == 503
+    assert time.monotonic() - started < 1
+    await asyncio.wait_for(sent.wait(), 5)  # алерт всё равно доставлен
+
+
+async def test_framework_errors_are_openai_json(env, monkeypatch):
+    """404 на /v1 и 413 на слишком большое тело приходили text/plain, а документация
+    обещает тело ошибки в формате OpenAI."""
+    client, db = env
+    resp = await client.get("/v1")
+    assert resp.status == 404
+    assert (await resp.json())["error"]["code"] == "not_found"
+
+    monkeypatch.setattr(gateway_module, "MAX_BODY", 10)
+    small = TestClient(TestServer(Gateway(db, Settings(bot_token="1:x")).build()))
+    await small.start_server()
+    try:
+        key = await subscriber(db)
+        resp = await small.post(
+            "/v1/chat/completions", data=b"x" * 100, headers={"Authorization": f"Bearer {key}"}
+        )
+        assert resp.status == 413
+        assert (await resp.json())["error"]["code"] == "request_too_large"
+    finally:
+        await small.close()
+
+
+async def test_many_slow_requests_do_not_block_other_clients(env):
+    """Сто двадцать долгих запросов одного клиента занимали все 100 соединений к провайдеру,
+    и остальные клиенты висели без ответа."""
+    client, db = env
+    release = asyncio.Event()
+    in_flight = 0
+
+    async def slow(request: web.Request) -> web.Response:
+        nonlocal in_flight
+        in_flight += 1
+        await release.wait()
+        return web.json_response({"ok": True})
+
+    slow_app = web.Application()
+    slow_app.router.add_route("*", "/api/v1/{tail:.*}", slow)
+    slow_server = TestServer(slow_app)
+    await slow_server.start_server()
+    gateway = Gateway(
+        db, Settings(bot_token="1:x", api_base_url=str(slow_server.make_url("/api/v1")))
+    )
+    gw = TestServer(gateway.build())
+    await gw.start_server()
+    key = await subscriber(db)
+    auth = {"Authorization": f"Bearer {key}"}
+    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0))
+    try:
+        hogs = [
+            asyncio.create_task(
+                session.post(gw.make_url("/v1/chat/completions"), json={}, headers=auth)
+            )
+            for _ in range(120)
+        ]
+        for _ in range(200):
+            if in_flight >= 120:
+                break
+            await asyncio.sleep(0.02)
+        assert in_flight == 120
+        victim = asyncio.create_task(session.get(gw.make_url("/v1/models"), headers=auth))
+        for _ in range(100):
+            if in_flight > 120:
+                break
+            await asyncio.sleep(0.02)
+        assert in_flight == 121  # запрос другого клиента дошёл до провайдера
+        release.set()
+        for resp in await asyncio.gather(*hogs, victim):
+            resp.release()
+    finally:
+        release.set()
+        await session.close()
+        await gw.close()
+        await slow_server.close()

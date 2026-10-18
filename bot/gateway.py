@@ -8,6 +8,7 @@
 Наружу сервер смотрит через Caddy (HTTPS), сам слушает только 127.0.0.1.
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -15,6 +16,7 @@ from collections.abc import Awaitable, Callable
 
 import aiohttp
 from aiohttp import web
+from yarl import URL
 
 from bot.catalog import SHOP_NAME
 from bot.config import Settings
@@ -29,6 +31,13 @@ MAX_BODY = 50 * 1024 * 1024  # картинки-референсы приход�
 ALLOWED_ROOTS = {"chat", "completions", "messages", "models", "images", "videos", "responses"}
 SAFE_PATH = re.compile(r"[A-Za-z0-9._\-/:]+")
 BAD_KEY_ALERT_INTERVAL = 3600  # не чаще раза в час на один ключ
+# Одновременных запросов к провайдеру. По умолчанию у aiohttp 100, и ожидание слота ничем
+# не ограничено: сотня долгих запросов одного клиента вешала эндпоинт всем остальным
+UPSTREAM_CONNECTIONS = 400
+UPSTREAM_SLOT_WAIT = 60  # сколько ждать свободного соединения, прежде чем ответить 502
+REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+MAX_REDIRECTS = 5
+PROVIDER_AUTH_HEADERS = ("Authorization", "x-api-key")
 # Заголовки запроса клиента, которые передаём провайдеру
 FORWARD_REQUEST_HEADERS = (
     "content-type",
@@ -61,6 +70,22 @@ def api_error(status: int, code: str, message: str, kind: str = "invalid_request
     )
 
 
+@web.middleware
+async def json_errors(request: web.Request, handler) -> web.StreamResponse:
+    """Ошибки самого aiohttp (413 — тело больше лимита, 404 на /v1, 405) отдаём в формате
+    OpenAI, как обещает документация: SDK клиентов разбирают именно его."""
+    try:
+        return await handler(request)
+    except web.HTTPException as e:
+        if e.status < 400:
+            raise
+        if e.status == 404:
+            return api_error(404, "not_found", "Такого эндпоинта нет")
+        if e.status == 413:
+            return api_error(413, "request_too_large", "Тело запроса больше 50 МБ")
+        return api_error(e.status, f"http_{e.status}", e.reason)
+
+
 def is_allowed_path(path: str) -> bool:
     """Пропускаем только эндпоинты моделей и без «..»: иначе через наш ключ провайдера
     можно было бы дотянуться до других адресов провайдера (настройки аккаунта и т. п.)."""
@@ -86,21 +111,29 @@ class Gateway:
         self.alert = alert  # уведомление админам (в боте — notify_admins)
         self._http: aiohttp.ClientSession | None = None
         self._alerted: dict[str, float] = {}
+        self._alerts: set[asyncio.Task] = set()  # ссылки, чтобы задачи не собрал GC
 
-    async def _report_bad_upstream_key(self, user_id: int, key: str, status: int) -> None:
+    def _report_bad_upstream_key(self, user_id: int, key: str, status: int) -> None:
         logger.error("Ключ провайдера пользователя %s отклонён (%s)", user_id, status)
         now = time.monotonic()
         if self.alert is None or now - self._alerted.get(key, -1e9) < BAD_KEY_ALERT_INTERVAL:
             return
         self._alerted[key] = now
-        await self.alert(
-            f"⚠️ Провайдер отклонил ключ пользователя <code>{user_id}</code> (HTTP {status}).\n"
-            f"Ключ: <code>…{key[-6:]}</code>\n"
-            f"Выдайте рабочий ключ: <code>/givekey {user_id} KEY</code>"
+        # В фоне: рассылка админам идёт через Telegram и может занять секунды,
+        # клиент не должен ждать её, чтобы получить ответ
+        task = asyncio.create_task(
+            self.alert(
+                f"⚠️ Провайдер отклонил ключ пользователя <code>{user_id}</code> "
+                f"(HTTP {status}).\n"
+                f"Ключ: <code>…{key[-6:]}</code>\n"
+                f"Выдайте рабочий ключ: <code>/givekey {user_id} KEY</code>"
+            )
         )
+        self._alerts.add(task)
+        task.add_done_callback(self._alerts.discard)
 
     def build(self) -> web.Application:
-        app = web.Application(client_max_size=MAX_BODY)
+        app = web.Application(client_max_size=MAX_BODY, middlewares=[json_errors])
         app.router.add_get("/", self.index)
         app.router.add_get("/health", self.health)
         app.router.add_route("*", "/v1/{path:.*}", self.proxy)
@@ -114,11 +147,40 @@ class Gateway:
     def _session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
             self._http = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit=UPSTREAM_CONNECTIONS),
                 # сжатый ответ провайдера пересылаем как есть, не распаковывая
                 auto_decompress=False,
-                timeout=aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=900),
+                timeout=aiohttp.ClientTimeout(
+                    total=None, connect=UPSTREAM_SLOT_WAIT, sock_connect=20, sock_read=900
+                ),
             )
         return self._http
+
+    async def _request(
+        self, method: str, url: str, params, body: bytes | None, headers: dict[str, str]
+    ) -> aiohttp.ClientResponse:
+        """Запрос к провайдеру. Редиректы проходим сами: при переходе на другой хост
+        (например, видео на CDN) aiohttp убирает только Authorization, а x-api-key с ключом
+        провайдера ушёл бы постороннему серверу."""
+        session = self._session()
+        origin = URL(self.settings.api_base_url).origin()
+        up = await session.request(
+            method, url, params=params, data=body, headers=headers, allow_redirects=False
+        )
+        for _ in range(MAX_REDIRECTS):
+            location = up.headers.get("Location")
+            if up.status not in REDIRECT_STATUSES or not location:
+                break
+            target = up.url.join(URL(location))
+            up.release()
+            if target.origin() != origin:
+                headers = {k: v for k, v in headers.items() if k not in PROVIDER_AUTH_HEADERS}
+            if up.status == 303 or (up.status in (301, 302) and method == "POST"):
+                method, body = "GET", None
+            up = await session.request(
+                method, target, data=body, headers=headers, allow_redirects=False
+            )
+        return up
 
     async def index(self, _: web.Request) -> web.Response:
         return web.json_response(
@@ -170,13 +232,13 @@ class Gateway:
 
         started = time.monotonic()
         try:
-            async with self._session().request(
-                request.method, url, params=request.query, data=body, headers=headers
-            ) as up:
-                if up.status in (401, 402, 403):
+            async with await self._request(request.method, url, request.query, body, headers) as up:
+                # (ответ именно провайдера, а не CDN после редиректа: там ключ не участвует)
+                provider_answered = up.url.origin() == URL(self.settings.api_base_url).origin()
+                if up.status in (401, 402, 403) and provider_answered:
                     # ключ провайдера из пула не работает (отозван, у аккаунта кончился тариф) —
                     # это наша проблема, не клиента: его подписку мы уже проверили выше
-                    await self._report_bad_upstream_key(user_id, upstream_key, up.status)
+                    self._report_bad_upstream_key(user_id, upstream_key, up.status)
                     return api_error(
                         503,
                         "provider_key_error",
@@ -196,8 +258,12 @@ class Gateway:
                     async for chunk in up.content.iter_any():
                         await response.write(chunk)
                 except (ConnectionResetError, aiohttp.ClientError) as e:
-                    # ответ уже начат — новую ошибку не отправить, просто закрываем поток
+                    # Ответ уже начат — новую ошибку не отправить. Рвём соединение, не дописав
+                    # ответ: иначе aiohttp сам корректно его завершит, и клиент примет
+                    # обрезанный JSON или поток без [DONE] за полный
                     logger.info("user %s: поток /v1/%s прерван (%s)", user_id, path, e)
+                    if request.transport is not None:
+                        request.transport.close()
                     return response
                 await response.write_eof()
                 logger.info(

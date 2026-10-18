@@ -939,6 +939,8 @@ data: [DONE]</pre>
             <tr><td class="num">401</td><td><code>invalid_api_key</code></td><td>Ключ не передан или недействителен. Проверьте заголовок и ключ в <code>/profile</code>.</td></tr>
             <tr><td class="num">402</td><td><code>subscription_required</code></td><td>Нет активного тарифа. Продлите подписку в боте.</td></tr>
             <tr><td class="num">404</td><td><code>model_not_found</code></td><td>Модели с таким ID нет. Сверьтесь с разделом <a href="#models">Модели</a>.</td></tr>
+            <tr><td class="num">404</td><td><code>not_found</code></td><td>Такого эндпоинта нет. Проверьте путь: он начинается с <code>/v1/</code>, например <code>/v1/chat/completions</code>.</td></tr>
+            <tr><td class="num">413</td><td><code>request_too_large</code></td><td>Тело запроса больше 50 МБ. Уменьшите или сожмите вложенные изображения.</td></tr>
             <tr><td class="num">429</td><td><code>plan_limit_reached</code></td><td>Дневной лимит тарифа исчерпан. Доступ вернётся после сброса, время сброса есть в заголовке <code>X-Plan-Reset</code>.</td></tr>
             <tr><td class="num">500</td><td><code>server_error</code></td><td>Внутренняя ошибка. Повторите запрос через несколько секунд.</td></tr>
             <tr><td class="num">502</td><td><code>upstream_error</code></td><td>Сервис моделей временно не отвечает. Повторите запрос.</td></tr>
