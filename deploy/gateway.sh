@@ -20,7 +20,21 @@ if ! command -v caddy >/dev/null; then
 fi
 
 cat > /etc/caddy/Caddyfile.new <<EOF
+{
+	servers {
+		# Только HTTP/1.1 и HTTP/2: HTTP/3 (UDP 443) клиентам API не нужен — минус открытый порт
+		protocols h1 h2
+		timeouts {
+			# заголовки запроса — не дольше 10 с: «медленные» соединения не держат сервер
+			read_header 10s
+			# простаивающее keep-alive соединение закрывается через 2 минуты
+			idle 2m
+		}
+	}
+}
+
 $HOST {
+	header -Server
 	reverse_proxy 127.0.0.1:8081 {
 		# ответы моделей идут потоком — отдаём клиенту сразу, без буфера
 		flush_interval -1

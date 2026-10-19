@@ -569,6 +569,7 @@ data: [DONE]</pre>
             <tr><td class="num">404</td><td><code>model_not_found</code></td><td>Модели с таким ID нет. Сверьтесь с разделом <a href="#models">Модели</a>.</td></tr>
             <tr><td class="num">404</td><td><code>not_found</code></td><td>Такого эндпоинта нет. Проверьте путь: он начинается с <code>/v1/</code>, например <code>/v1/chat/completions</code>.</td></tr>
             <tr><td class="num">413</td><td><code>request_too_large</code></td><td>Тело запроса больше 50 МБ. Уменьшите или сожмите вложенные изображения.</td></tr>
+            <tr><td class="num">429</td><td><code>rate_limited</code></td><td>Больше 100 запросов в секунду с одного адреса. Повторите через секунду.</td></tr>
             <tr><td class="num">429</td><td><code>too_many_concurrent_requests</code></td><td>Больше 20 одновременных запросов на один ключ. Дождитесь ответов на текущие и повторите.</td></tr>
             <tr><td class="num">429</td><td><code>plan_limit_reached</code></td><td>Дневной лимит тарифа исчерпан. Доступ вернётся после сброса, время сброса есть в заголовке <code>X-Plan-Reset</code>.</td></tr>
             <tr><td class="num">500</td><td><code>server_error</code></td><td>Внутренняя ошибка. Повторите запрос через несколько секунд.</td></tr>
@@ -583,7 +584,7 @@ data: [DONE]</pre>
     <section class="sheet glass" id="limits">
       <span class="kicker">Тарифы</span>
       <h2>Лимиты и тарифы</h2>
-      <p class="prose">Ограничения на число запросов в минуту нет. Одновременно на один ключ обрабатывается до 20 запросов: лишние получат ответ <code>429 too_many_concurrent_requests</code>, их можно повторить, как только придут ответы на текущие. Объём работы зависит от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
+      <p class="prose">С одного адреса принимается до 100 запросов в секунду (сверх — <code>429 rate_limited</code>), одновременно на один ключ обрабатывается до 20 запросов (сверх — <code>429 too_many_concurrent_requests</code>). Лишние запросы можно сразу повторить. Ограничений по числу запросов в минуту или в день нет. Объём работы зависит от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
 <!-- @plans -->
       <p class="prose">Остаток по тарифу приходит в заголовках каждого ответа:</p>
       <div class="table-wrap">

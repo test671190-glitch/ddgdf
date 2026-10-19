@@ -18,7 +18,7 @@ import aiohttp
 from aiohttp import web
 from yarl import URL
 
-from bot.catalog import MAX_CONCURRENT_REQUESTS, SHOP_NAME
+from bot.catalog import MAX_CONCURRENT_REQUESTS, MAX_REQUESTS_PER_SECOND, SHOP_NAME
 from bot.config import Settings
 from bot.db import CLIENT_KEY_PREFIX, Database
 
@@ -38,6 +38,10 @@ UPSTREAM_SLOT_WAIT = 60  # сколько ждать свободного сое
 # Одновременных запросов на одного клиента: агентам в IDE хватает с запасом, а один ключ
 # не может занять все соединения (UPSTREAM_CONNECTIONS) и оставить без ответа остальных
 MAX_CONCURRENT_PER_CLIENT = MAX_CONCURRENT_REQUESTS
+# Запросов в секунду с одного IP — до проверки ключа: флуд, в том числе с чужими или
+# выдуманными ключами, не доходит до базы и провайдера
+MAX_REQUESTS_PER_IP = MAX_REQUESTS_PER_SECOND
+LOCAL_PROXIES = {"127.0.0.1", "::1"}
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 MAX_REDIRECTS = 5
 PROVIDER_AUTH_HEADERS = ("Authorization", "x-api-key")
@@ -100,6 +104,38 @@ def is_allowed_path(path: str) -> bool:
     return segments[0] in ALLOWED_ROOTS
 
 
+def client_ip(request: web.Request) -> str:
+    """Адрес клиента. Наружу смотрит Caddy: он кладёт настоящий адрес в X-Forwarded-For
+    (присланный клиентом заголовок не доверяет и перезаписывает). Напрямую — адрес сокета."""
+    remote = request.remote or ""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded and remote in LOCAL_PROXIES:
+        return forwarded.split(",")[-1].strip() or remote
+    return remote
+
+
+class RateLimiter:
+    """Не больше rate запросов в секунду с одного адреса (ведро токенов, всплеск до rate)."""
+
+    def __init__(self, rate: int) -> None:
+        self.rate = rate
+        self._buckets: dict[str, tuple[float, float]] = {}  # адрес -> (токены, время)
+        self._cleaned = time.monotonic()
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        tokens, last = self._buckets.get(key, (float(self.rate), now))
+        tokens = min(float(self.rate), tokens + (now - last) * self.rate)
+        allowed = tokens >= 1
+        self._buckets[key] = (tokens - 1 if allowed else tokens, now)
+        if now - self._cleaned > 60:
+            # через секунду тишины ведро снова полное: такие записи можно забыть,
+            # иначе словарь рос бы с каждым новым адресом
+            self._buckets = {k: v for k, v in self._buckets.items() if now - v[1] < 1}
+            self._cleaned = now
+        return allowed
+
+
 def client_key_from(request: web.Request) -> str | None:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -116,6 +152,7 @@ class Gateway:
         self._alerted: dict[str, float] = {}
         self._alerts: set[asyncio.Task] = set()  # ссылки, чтобы задачи не собрал GC
         self._in_flight: dict[int, int] = {}  # user_id -> запросов к провайдеру прямо сейчас
+        self._per_ip = RateLimiter(MAX_REQUESTS_PER_IP)
 
     def _report_bad_upstream_key(self, user_id: int, key: str, status: int) -> None:
         logger.error("Ключ провайдера пользователя %s отклонён (%s)", user_id, status)
@@ -233,6 +270,15 @@ class Gateway:
         return user_id, upstream.key
 
     async def proxy(self, request: web.Request) -> web.StreamResponse:
+        if not self._per_ip.allow(client_ip(request)):
+            response = api_error(
+                429,
+                "rate_limited",
+                f"Не больше {MAX_REQUESTS_PER_IP} запросов в секунду с одного адреса",
+                kind="rate_limit_error",
+            )
+            response.headers["Retry-After"] = "1"
+            return response
         path = request.match_info["path"]
         if not is_allowed_path(path):
             return api_error(404, "not_found", "Такого эндпоинта нет")

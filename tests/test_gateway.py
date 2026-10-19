@@ -412,7 +412,9 @@ async def slow_provider(env):
     async def client_key(user_id: int) -> dict[str, str]:
         await db.add_keys("pro", [f"up-{user_id}"])
         await db.grant(user_id, "pro", 30)
-        return {"Authorization": f"Bearer {await db.get_or_create_client_key(user_id)}"}
+        key = await db.get_or_create_client_key(user_id)
+        # у каждого клиента свой адрес (за Caddy): лимит запросов в секунду считается по адресу
+        return {"Authorization": f"Bearer {key}", "X-Forwarded-For": f"203.0.113.{user_id}"}
 
     async def wait_in_flight(count: int) -> None:
         for _ in range(200):
@@ -579,3 +581,40 @@ async def test_provider_cookies_are_not_shared_between_clients(redirecting):
     for _ in range(2):
         assert (await client.get("/v1/chat/cookie", headers=auth)).status == 200
     assert cookies_seen == [None, None]
+
+
+async def test_requests_per_ip_are_limited(env, monkeypatch):
+    """Флуд с одного адреса (в том числе с выдуманными ключами) отсекается до проверки
+    ключа; другие адреса за прокси Caddy при этом работают."""
+    client, db = env
+    gateway = next(
+        r.handler.__self__
+        for r in client.server.app.router.routes()
+        if isinstance(getattr(r.handler, "__self__", None), Gateway)
+    )
+    gateway._per_ip = gateway_module.RateLimiter(3)
+    key = await subscriber(db)
+    auth = {"Authorization": f"Bearer {key}", "X-Forwarded-For": "203.0.113.7"}
+    statuses = [(await client.get("/v1/models", headers=auth)).status for _ in range(5)]
+    assert statuses == [200, 200, 200, 429, 429]
+    resp = await client.get("/v1/models", headers=auth)
+    assert (await resp.json())["error"]["code"] == "rate_limited"
+    other = {"Authorization": f"Bearer {key}", "X-Forwarded-For": "198.51.100.1"}
+    assert (await client.get("/v1/models", headers=other)).status == 200
+
+
+def test_client_ip_trusts_forwarded_only_from_local_proxy():
+    from types import SimpleNamespace
+
+    headers = {"X-Forwarded-For": "1.2.3.4, 203.0.113.7"}
+    via_caddy = SimpleNamespace(remote="127.0.0.1", headers=headers)
+    assert gateway_module.client_ip(via_caddy) == "203.0.113.7"
+    # напрямую, мимо Caddy: подделанному заголовку не верим
+    direct = SimpleNamespace(remote="198.51.100.9", headers=headers)
+    assert gateway_module.client_ip(direct) == "198.51.100.9"
+
+
+def test_rate_limiter_refills():
+    limiter = gateway_module.RateLimiter(2)
+    assert [limiter.allow("a") for _ in range(3)] == [True, True, False]
+    assert limiter.allow("b")
