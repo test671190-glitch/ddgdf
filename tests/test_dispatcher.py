@@ -546,6 +546,44 @@ async def test_client_reply_to_answer_continues_ticket(tg, db):
     assert len(admin_copies(session)) == 1
 
 
+async def test_message_via_other_bot_is_not_sent_to_support(tg, db):
+    """Сообщение «via @бот» несёт кнопки-ссылки того бота: в копии у админа они выглядели
+    бы кнопками нашего бота («Подтвердить оплату» на фишинговый сайт)."""
+    bot, session = tg
+    links_bot = User(id=777, is_bot=True, first_name="links", username="linksbot")
+    answer = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=42, type="private"),
+        from_user=BOT_USER,
+        text="Ответ поддержки\n\nПроверьте ключ",
+    )
+    await feed(bot, message_update("ответ", reply_to_message=answer, via_bot=links_bot), db)
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("Подтвердите оплату", via_bot=links_bot), db)
+    assert admin_copies(session) == []
+
+
+async def test_payment_with_wrong_amount_is_not_credited(tg, db):
+    """Вторая линия после pre_checkout: оплата не той суммы или не в Stars начисляла
+    подписку как полная."""
+    bot, session = tg
+    price = TARIFFS["pro"].stars(settings().stars_per_usd)
+    for currency, amount, charge in (("XTR", price - 1, "ch-low"), ("USD", price, "ch-usd")):
+        payment = SuccessfulPayment(
+            currency=currency,
+            total_amount=amount,
+            invoice_payload="tariff:pro",
+            telegram_payment_charge_id=charge,
+            provider_payment_charge_id="",
+        )
+        await feed(bot, message_update(successful_payment=payment), db)
+        assert await db.get_subscription(42) is None
+        notices = [m.text for m in sent_to(session, 1000)]
+        assert any(charge in t and "не начислена" in t for t in notices)
+    assert "сумма не совпала" in sent_to(session, 42)[-1].text
+
+
 async def test_stats_do_not_count_admin_subscriptions(tg, db):
     bot, session = tg
     await db.upsert_user(1000, None, "Admin")

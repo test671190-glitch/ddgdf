@@ -212,6 +212,31 @@ async def on_successful_payment(
             "Оплата получена, но тариф не распознан. Мы уже разбираемся — напишите в /support."
         )
         return
+    expected = tariff.stars(settings.stars_per_usd)
+    if payment.currency != CURRENCY or payment.total_amount != expected:
+        # pre_checkout такие оплаты отклоняет; сюда попадёт разве что оплата, на которую
+        # цена сменилась уже после проверки. Подписку за другую сумму сами не выдаём
+        logger.error(
+            "Сумма платежа %s не совпала с ценой: %s %s вместо %s XTR",
+            payment.telegram_payment_charge_id,
+            payment.currency,
+            payment.total_amount,
+            expected,
+        )
+        await notify_admins(
+            bot,
+            settings,
+            f"❗️ Оплата от <code>{user.id}</code> не совпала с ценой тарифа "
+            f"<b>{tariff.title}</b>: {escape(payment.currency)} {payment.total_amount} "
+            f"вместо ⭐ {expected}, charge_id "
+            f"<code>{escape(payment.telegram_payment_charge_id)}</code>. Подписка не начислена.\n"
+            f"Начислить вручную: <code>/grant {user.id} {tariff.code}</code>",
+        )
+        await message.answer(
+            "Оплата получена, но сумма не совпала с ценой тарифа. Мы уже разбираемся — "
+            "напишите в /support."
+        )
+        return
 
     try:
         act = await db.activate_paid(

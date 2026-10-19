@@ -287,7 +287,9 @@ async def _forward(
             await message.answer(texts.support_sent(), reply_markup=main_menu_for(sub))
 
 
-@router.message(SupportForm.writing, F.content_type.in_(USER_CONTENT))
+# Сообщения «via @бот» не пересылаем: такой бот подставляет в сообщение свои кнопки-ссылки,
+# и в копии у админа они выглядели бы кнопками нашего бота
+@router.message(SupportForm.writing, F.content_type.in_(USER_CONTENT), F.via_bot.is_(None))
 async def client_message(
     message: Message, state: FSMContext, bot: Bot, db: Database, settings: Settings
 ) -> None:
@@ -307,7 +309,12 @@ def replies_to_answer(message: Message) -> bool:
     return (reply.text or reply.caption or "").startswith(ANSWER_HEAD)
 
 
-@router.message(replies_to_answer, F.content_type.in_(USER_CONTENT), ~F.text.regexp(COMMAND))
+@router.message(
+    replies_to_answer,
+    F.content_type.in_(USER_CONTENT),
+    ~F.text.regexp(COMMAND),
+    F.via_bot.is_(None),
+)
 async def client_reply(
     message: Message, state: FSMContext, bot: Bot, db: Database, settings: Settings
 ) -> None:

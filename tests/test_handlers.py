@@ -193,7 +193,10 @@ def stars_payment(payload: str, charge_id: str = "ch-1") -> SimpleNamespace:
     message = FakeMessage()
     message.from_user = SimpleNamespace(id=7, username="neo", full_name="Neo")
     message.successful_payment = SimpleNamespace(
-        invoice_payload=payload, total_amount=2541, telegram_payment_charge_id=charge_id
+        currency="XTR",
+        invoice_payload=payload,
+        total_amount=2541,
+        telegram_payment_charge_id=charge_id,
     )
     return message
 
