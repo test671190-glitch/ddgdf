@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -565,3 +565,81 @@ async def test_reminder_marked_for_expiry_edited_by_hand(db):
     (due,) = await db.due_reminders(timedelta(days=3))
     await db.mark_reminded(1, due.expires_at)
     assert await db.due_reminders(timedelta(days=3)) == []
+
+
+async def test_refund_takes_only_unused_days_of_payment(db):
+    """Период платежа сохранён: возврат отнимает только ещё не прошедшие дни этого платежа,
+    а не 30 дней вслепую (которые съели бы и следующий оплаченный период)."""
+    await db.add_keys("pro", ["k1"])
+    await db.activate_paid(1, "pro", 30, 1, "A")
+    await db.activate_paid(1, "pro", 30, 1, "B")
+    # прошло 10 дней: сдвигаем всё на 10 дней назад
+    shift = timedelta(days=10)
+    for column in ("period_start", "period_end"):
+        rows = await db._all(f"SELECT charge_id, {column} FROM payments")
+        for row in rows:
+            moved = datetime.fromisoformat(row[column]) - shift
+            await db.conn.execute(
+                f"UPDATE payments SET {column}=? WHERE charge_id=?", (_iso(moved), row["charge_id"])
+            )
+    sub = await db.get_subscription(1)
+    await db.conn.execute(
+        "UPDATE subscriptions SET expires_at=? WHERE user_id=1", (_iso(sub.expires_at - shift),)
+    )
+    await db.conn.commit()
+    before = (await db.get_subscription(1)).expires_at
+    refund = await db.refund("A", 30)
+    assert refund.adjusted
+    # у A осталось 20 неиспользованных дней — ровно их и отняли, период B цел
+    assert (await db.get_subscription(1)).expires_at == before - timedelta(days=20)
+
+
+async def test_refund_of_payment_without_saved_period_uses_estimate(db):
+    """Платежи, сделанные до сохранения периодов, считаются по прежней оценке."""
+    await db.add_keys("pro", ["k1"])
+    await db.activate_paid(1, "pro", 30, 1, "A")
+    await db.activate_paid(1, "pro", 30, 1, "B")
+    await db.conn.execute("UPDATE payments SET period_start=NULL, period_end=NULL, chain=NULL")
+    await db.conn.commit()
+    before = (await db.get_subscription(1)).expires_at
+    assert (await db.refund("A", 30)).adjusted
+    assert (await db.get_subscription(1)).expires_at == before - timedelta(days=30)
+
+
+async def test_migration_adds_payment_periods(tmp_path):
+    """База со старой схемой: колонки периода добавляются, старые платежи остаются без него,
+    новая подписка после окончания старой начинает цепочку."""
+    import aiosqlite
+
+    path = tmp_path / "old.db"
+    async with aiosqlite.connect(path) as conn:
+        await conn.executescript(
+            "CREATE TABLE subscriptions (user_id INTEGER PRIMARY KEY, tariff TEXT NOT NULL, "
+            "expires_at TEXT NOT NULL, notified_soon INTEGER NOT NULL DEFAULT 0, "
+            "notified_expired INTEGER NOT NULL DEFAULT 0);"
+            "CREATE TABLE payments (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "user_id INTEGER NOT NULL, tariff TEXT NOT NULL, stars INTEGER NOT NULL, "
+            "charge_id TEXT NOT NULL UNIQUE, "
+            "created_at TEXT NOT NULL, refunded INTEGER NOT NULL DEFAULT 0);"
+        )
+        await conn.execute(
+            "INSERT INTO payments (user_id, tariff, stars, charge_id, created_at) "
+            "VALUES (1, 'pro', 1, 'old', ?)",
+            (_iso(utcnow()),),
+        )
+        await conn.execute(
+            "INSERT INTO subscriptions (user_id, tariff, expires_at) VALUES (1, 'pro', ?)",
+            (_iso(utcnow() + timedelta(days=30)),),
+        )
+        await conn.commit()
+    database = Database(str(path))
+    await database.connect()
+    try:
+        old = await database._one("SELECT period_start, chain FROM payments WHERE charge_id='old'")
+        assert old["period_start"] is None and old["chain"] is None
+        # продление старой подписки: цепочка неизвестна — возврат пойдёт по оценке
+        await database.activate_paid(1, "pro", 30, 1, "new")
+        assert (await database.refund("new", 30)).adjusted
+    finally:
+        # иначе при падении поток базы не даёт pytest завершиться
+        await database.close()

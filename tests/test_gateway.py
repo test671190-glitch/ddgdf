@@ -387,17 +387,15 @@ async def test_framework_errors_are_openai_json(env, monkeypatch):
         await small.close()
 
 
-async def test_many_slow_requests_do_not_block_other_clients(env):
-    """Сто двадцать долгих запросов одного клиента занимали все 100 соединений к провайдеру,
-    и остальные клиенты висели без ответа."""
-    client, db = env
-    release = asyncio.Event()
-    in_flight = 0
+@pytest.fixture
+async def slow_provider(env):
+    """Провайдер, который держит каждый запрос, пока тест его не отпустит."""
+    _, db = env
+    state = {"in_flight": 0, "release": asyncio.Event()}
 
     async def slow(request: web.Request) -> web.Response:
-        nonlocal in_flight
-        in_flight += 1
-        await release.wait()
+        state["in_flight"] += 1
+        await state["release"].wait()
         return web.json_response({"ok": True})
 
     slow_app = web.Application()
@@ -409,35 +407,69 @@ async def test_many_slow_requests_do_not_block_other_clients(env):
     )
     gw = TestServer(gateway.build())
     await gw.start_server()
-    key = await subscriber(db)
-    auth = {"Authorization": f"Bearer {key}"}
     session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0))
-    try:
-        hogs = [
-            asyncio.create_task(
-                session.post(gw.make_url("/v1/chat/completions"), json={}, headers=auth)
-            )
-            for _ in range(120)
-        ]
+
+    async def client_key(user_id: int) -> dict[str, str]:
+        await db.add_keys("pro", [f"up-{user_id}"])
+        await db.grant(user_id, "pro", 30)
+        return {"Authorization": f"Bearer {await db.get_or_create_client_key(user_id)}"}
+
+    async def wait_in_flight(count: int) -> None:
         for _ in range(200):
-            if in_flight >= 120:
-                break
+            if state["in_flight"] >= count:
+                return
             await asyncio.sleep(0.02)
-        assert in_flight == 120
-        victim = asyncio.create_task(session.get(gw.make_url("/v1/models"), headers=auth))
-        for _ in range(100):
-            if in_flight > 120:
-                break
-            await asyncio.sleep(0.02)
-        assert in_flight == 121  # запрос другого клиента дошёл до провайдера
-        release.set()
-        for resp in await asyncio.gather(*hogs, victim):
-            resp.release()
-    finally:
-        release.set()
-        await session.close()
-        await gw.close()
-        await slow_server.close()
+
+    yield gw, session, state, client_key, wait_in_flight
+    state["release"].set()
+    await session.close()
+    await gw.close()
+    await slow_server.close()
+
+
+async def test_many_slow_requests_do_not_block_other_clients(slow_provider):
+    """Сто двадцать долгих запросов занимали все 100 соединений к провайдеру,
+    и остальные клиенты висели без ответа."""
+    gw, session, state, client_key, wait_in_flight = slow_provider
+    url = gw.make_url("/v1/chat/completions")
+    hogs = []
+    for user_id in range(1, 7):  # шесть клиентов по 20 запросов
+        auth = await client_key(user_id)
+        hogs += [asyncio.create_task(session.post(url, json={}, headers=auth)) for _ in range(20)]
+    await wait_in_flight(120)
+    assert state["in_flight"] == 120
+    victim = asyncio.create_task(
+        session.get(gw.make_url("/v1/models"), headers=await client_key(7))
+    )
+    await wait_in_flight(121)
+    assert state["in_flight"] == 121  # запрос другого клиента дошёл до провайдера
+    state["release"].set()
+    for resp in await asyncio.gather(*hogs, victim):
+        assert resp.status == 200
+        resp.release()
+
+
+async def test_one_client_cannot_take_all_connections(slow_provider):
+    """Без лимита на клиента один ключ мог занять все соединения к провайдеру."""
+    gw, session, state, client_key, wait_in_flight = slow_provider
+    auth = await client_key(1)
+    url = gw.make_url("/v1/chat/completions")
+    tasks = [asyncio.create_task(session.post(url, json={}, headers=auth)) for _ in range(25)]
+    await wait_in_flight(gateway_module.MAX_CONCURRENT_PER_CLIENT)
+    await asyncio.sleep(0.2)
+    assert state["in_flight"] == gateway_module.MAX_CONCURRENT_PER_CLIENT
+    state["release"].set()
+    responses = await asyncio.gather(*tasks)
+    statuses = sorted(r.status for r in responses)
+    assert statuses == [200] * 20 + [429] * 5
+    limited = next(r for r in responses if r.status == 429)
+    assert (await limited.json())["error"]["code"] == "too_many_concurrent_requests"
+    for resp in responses:
+        resp.release()
+    # ответы пришли — лимит освободился
+    again = await session.post(url, json={}, headers=auth)
+    assert again.status == 200
+    again.release()
 
 
 @pytest.fixture

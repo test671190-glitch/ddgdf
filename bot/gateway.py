@@ -35,6 +35,9 @@ BAD_KEY_ALERT_INTERVAL = 3600  # не чаще раза в час на один 
 # не ограничено: сотня долгих запросов одного клиента вешала эндпоинт всем остальным
 UPSTREAM_CONNECTIONS = 400
 UPSTREAM_SLOT_WAIT = 60  # сколько ждать свободного соединения, прежде чем ответить 502
+# Одновременных запросов на одного клиента: агентам в IDE хватает с запасом, а один ключ
+# не может занять все соединения (UPSTREAM_CONNECTIONS) и оставить без ответа остальных
+MAX_CONCURRENT_PER_CLIENT = 20
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 MAX_REDIRECTS = 5
 PROVIDER_AUTH_HEADERS = ("Authorization", "x-api-key")
@@ -112,6 +115,7 @@ class Gateway:
         self._http: aiohttp.ClientSession | None = None
         self._alerted: dict[str, float] = {}
         self._alerts: set[asyncio.Task] = set()  # ссылки, чтобы задачи не собрал GC
+        self._in_flight: dict[int, int] = {}  # user_id -> запросов к провайдеру прямо сейчас
 
     def _report_bad_upstream_key(self, user_id: int, key: str, status: int) -> None:
         logger.error("Ключ провайдера пользователя %s отклонён (%s)", user_id, status)
@@ -237,6 +241,29 @@ class Gateway:
             return auth
         user_id, upstream_key = auth
 
+        # Лимит до чтения тела: иначе один клиент сотней долгих запросов занимает все
+        # соединения к провайдеру (и память под тела до 50 МБ), а остальные ждут
+        if self._in_flight.get(user_id, 0) >= MAX_CONCURRENT_PER_CLIENT:
+            response = api_error(
+                429,
+                "too_many_concurrent_requests",
+                f"Не больше {MAX_CONCURRENT_PER_CLIENT} одновременных запросов на ключ. "
+                "Дождитесь ответов на текущие",
+                kind="rate_limit_error",
+            )
+            response.headers["Retry-After"] = "1"
+            return response
+        self._in_flight[user_id] = self._in_flight.get(user_id, 0) + 1
+        try:
+            return await self._forward(request, path, user_id, upstream_key)
+        finally:
+            self._in_flight[user_id] -= 1
+            if not self._in_flight[user_id]:
+                del self._in_flight[user_id]
+
+    async def _forward(
+        self, request: web.Request, path: str, user_id: int, upstream_key: str
+    ) -> web.StreamResponse:
         url = f"{self.settings.api_base_url.rstrip('/')}/{path}"
         headers = {h: request.headers[h] for h in FORWARD_REQUEST_HEADERS if h in request.headers}
         # Сжатие — только если клиент сам его просил: иначе aiohttp попросит gzip сам,

@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     tariff TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     notified_soon INTEGER NOT NULL DEFAULT 0,
-    notified_expired INTEGER NOT NULL DEFAULT 0
+    notified_expired INTEGER NOT NULL DEFAULT 0,
+    chain INTEGER  -- номер непрерывной цепочки продлений (смена тарифа начинает новую)
 );
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +37,11 @@ CREATE TABLE IF NOT EXISTS payments (
     stars INTEGER NOT NULL,
     charge_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
-    refunded INTEGER NOT NULL DEFAULT 0
+    refunded INTEGER NOT NULL DEFAULT 0,
+    -- оплаченный период и цепочка подписки, в которую он вошёл (NULL у старых платежей)
+    period_start TEXT,
+    period_end TEXT,
+    chain INTEGER
 );
 CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +91,10 @@ MIGRATIONS = (
     ("crypto_orders", "pay_url", "TEXT"),
     ("crypto_orders", "expires_at", "TEXT"),
     ("api_keys", "exposed", "INTEGER NOT NULL DEFAULT 1"),
+    ("payments", "period_start", "TEXT"),
+    ("payments", "period_end", "TEXT"),
+    ("payments", "chain", "INTEGER"),
+    ("subscriptions", "chain", "INTEGER"),
 )
 
 CLIENT_KEY_PREFIX = "sk-us-"
@@ -260,24 +269,37 @@ class Database:
             )
             if cur.rowcount == 0:
                 return None
-            return await self._apply(user_id, tariff, days, now)
+            return await self._apply(user_id, tariff, days, now, charge_id)
 
     async def grant(self, user_id: int, tariff: str, days: int) -> Activation:
         async with self._tx():
             return await self._apply(user_id, tariff, days, utcnow())
 
-    async def _apply(self, user_id: int, tariff: str, days: int, now: datetime) -> Activation:
+    async def _apply(
+        self, user_id: int, tariff: str, days: int, now: datetime, charge_id: str | None = None
+    ) -> Activation:
         sub = await self.get_subscription(user_id)
         extended = sub is not None and sub.tariff == tariff and sub.expires_at > now
         start = sub.expires_at if extended and sub else now
         expires = start + timedelta(days=days)
+        # Цепочка — непрерывная подписка одного тарифа. Продление её сохраняет, смена тарифа
+        # или покупка после окончания начинает новую: дни прежней цепочки уже не вернуть
+        row = await self._one("SELECT chain FROM subscriptions WHERE user_id=?", (user_id,))
+        current_chain = row["chain"] if row else None
+        chain = current_chain if extended else (current_chain or 0) + 1
         await self.conn.execute(
             "INSERT INTO subscriptions (user_id, tariff, expires_at, notified_soon, "
-            "notified_expired) VALUES (?, ?, ?, 0, 0) ON CONFLICT(user_id) DO UPDATE SET "
-            "tariff=excluded.tariff, expires_at=excluded.expires_at, notified_soon=0, "
-            "notified_expired=0",
-            (user_id, tariff, _iso(expires)),
+            "notified_expired, chain) VALUES (?, ?, ?, 0, 0, ?) ON CONFLICT(user_id) DO UPDATE "
+            "SET tariff=excluded.tariff, expires_at=excluded.expires_at, notified_soon=0, "
+            "notified_expired=0, chain=excluded.chain",
+            (user_id, tariff, _iso(expires), chain),
         )
+        if charge_id is not None:
+            # Какой период оплатил платёж: по нему возврат отнимает ровно эти дни
+            await self.conn.execute(
+                "UPDATE payments SET period_start=?, period_end=?, chain=? WHERE charge_id=?",
+                (_iso(start), _iso(expires), chain, charge_id),
+            )
 
         current = await self.get_active_key(user_id)
         revoked = None
@@ -484,12 +506,13 @@ class Database:
             if cur.rowcount == 0:
                 return None
             order = await self.get_crypto_order(order_id)
+            charge_id = f"{CRYPTO_PREFIX}{order_id}"
             await conn.execute(
                 "INSERT INTO payments (user_id, tariff, stars, charge_id, created_at) "
                 "VALUES (?, ?, 0, ?, ?)",
-                (order.user_id, order.tariff, f"{CRYPTO_PREFIX}{order_id}", _iso(now)),
+                (order.user_id, order.tariff, charge_id, _iso(now)),
             )
-            return order, await self._apply(order.user_id, order.tariff, days, now)
+            return order, await self._apply(order.user_id, order.tariff, days, now, charge_id)
 
     # --- вход на сайт через бота ---
 
@@ -571,21 +594,35 @@ class Database:
             pay = await self.get_payment(charge_id)
             if pay is None or pay.refunded:
                 return None
-            # Какой период оплатил этот платёж, база не помнит. Отнимаем дни, только если он
-            # точно входит в текущую подписку: иначе возврат старого платежа обрезал бы новый,
-            # отдельно оплаченный период
-            chain = await self._all(
+            # Отнимаем только дни этого платежа, которые ещё впереди в текущей подписке:
+            # возврат старого платежа не должен обрезать новый, отдельно оплаченный период
+            period = await self._one(
+                "SELECT p.period_start, p.period_end, p.chain, s.chain AS sub_chain "
+                "FROM payments p LEFT JOIN subscriptions s ON s.user_id=p.user_id "
+                "WHERE p.charge_id=?",
+                (charge_id,),
+            )
+            # Платежи до сохранения периодов: прежняя оценка по цепочке платежей
+            history = await self._all(
                 "SELECT tariff, created_at, refunded FROM payments WHERE user_id=? "
                 "AND id >= (SELECT id FROM payments WHERE charge_id=?) ORDER BY id",
                 (pay.user_id, charge_id),
             )
             await conn.execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge_id,))
-            if not _in_current_period(chain, pay.tariff, timedelta(days=days), now):
+            if period["chain"] is not None and period["sub_chain"] is not None:
+                start = datetime.fromisoformat(period["period_start"])
+                end = datetime.fromisoformat(period["period_end"])
+                if period["chain"] != period["sub_chain"] or end <= now:
+                    return Refund(pay.user_id, None, adjusted=False)
+                remove = end - max(start, now)
+            elif _in_current_period(history, pay.tariff, timedelta(days=days), now):
+                remove = timedelta(days=days)
+            else:
                 return Refund(pay.user_id, None, adjusted=False)
             sub = await self.get_subscription(pay.user_id)
             revoked = None
             if sub and sub.tariff == pay.tariff:
-                expires = sub.expires_at - timedelta(days=days)
+                expires = sub.expires_at - remove
                 ended = expires <= now
                 if ended:
                     expires = now
