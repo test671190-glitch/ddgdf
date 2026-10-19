@@ -219,5 +219,13 @@
     });
   }
 
-  try { init(); } catch (e) { console.warn("3D background disabled:", e); canvas.remove(); }
+  // Phones get the CSS glow only: the glass scene (a transmission pass every frame) under
+  // blurred cards overloaded mobile GPUs — stutter, flicker and lost WebGL contexts
+  if (lite) {
+    canvas.remove();
+  } else {
+    // a lost context (GPU reset, driver crash) left a frozen or black canvas over the glow
+    canvas.addEventListener("webglcontextlost", () => canvas.remove());
+    try { init(); } catch (e) { console.warn("3D background disabled:", e); canvas.remove(); }
+  }
 </script>

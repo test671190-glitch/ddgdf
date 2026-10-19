@@ -112,7 +112,13 @@
           Object.keys(links).forEach(function (id) { links[id].classList.toggle("active", id === entry.target.id); });
           var active = links[entry.target.id];
           if (active && window.matchMedia("(max-width: 960px)").matches) {
-            active.scrollIntoView({ block: "nearest", inline: "center", behavior: reduce.matches ? "auto" : "smooth" });
+            // Scroll only the horizontal index bar. scrollIntoView could also move the page
+            // and, on iPhones, cut off the finger's momentum scroll mid-flight
+            var toc = active.closest(".toc");
+            toc.scrollTo({
+              left: active.offsetLeft - (toc.clientWidth - active.offsetWidth) / 2,
+              behavior: reduce.matches ? "auto" : "smooth",
+            });
           }
         });
       }, { rootMargin: "-25% 0px -65% 0px" });
