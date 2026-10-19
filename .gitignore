@@ -7,11 +7,22 @@ __pycache__/
 
 # Секреты и данные: никогда не коммитить
 .env
+.env.*
+!.env.example
 data/
+backups/
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+*.sqlite*
+*.bak
+*.pem
+*.key
 
 # Артефакты сборки и деплоя
 *.tar.gz
+*.tgz
+*.zip
 docs/preview/
 *.log
