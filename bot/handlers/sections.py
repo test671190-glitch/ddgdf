@@ -4,6 +4,7 @@ import re
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, User
 
 from bot import texts
@@ -25,7 +26,7 @@ from bot.keyboards.inline import (
     models_list_keyboard,
     profile_keyboard,
     rotate_keyboard,
-    support_keyboard,
+    site_keyboard,
     web_login_keyboard,
 )
 from bot.services.access import shown_key
@@ -68,7 +69,11 @@ async def cmd_start(
     db: Database,
     settings: Settings,
     crypto: CryptoPayments | None,
+    state: FSMContext | None = None,
 ) -> None:
+    if state is not None:
+        # /start — выход отовсюду: незаконченное сообщение в поддержку тоже отменяется
+        await state.clear()
     args = command.args or ""
     # Вход на сайт: t.me/<bot>?start=login_<token>. Подтверждение кнопкой защищает от того,
     # что кто-то пришлёт свою ссылку и войдёт на сайт под чужим аккаунтом.
@@ -172,12 +177,12 @@ async def cb_rotate_key(
 
 @router.message(Command("api"))
 async def cmd_api(message: Message, settings: Settings) -> None:
-    await message.answer(texts.api_info(settings), reply_markup=api_keyboard(settings.docs_url))
+    await message.answer(texts.api_info(settings), reply_markup=api_keyboard(settings.docs_link))
 
 
 @router.callback_query(Menu.filter(F.section == "api"))
 async def cb_api(callback: CallbackQuery, settings: Settings) -> None:
-    await show(callback, texts.api_info(settings), api_keyboard(settings.docs_url))
+    await show(callback, texts.api_info(settings), api_keyboard(settings.docs_link))
 
 
 # --- FAQ ---
@@ -199,28 +204,19 @@ async def cb_faq_item(callback: CallbackQuery, callback_data: FaqItem) -> None:
     await show(callback, texts.faq_answer(question, answer), back("faq", "← К вопросам"))
 
 
-# --- поддержка и условия (/paysupport и /terms обязательны для оплаты в Stars) ---
+# --- сайт и условия (/terms обязателен для оплаты в Stars) ---
 
 
-@router.callback_query(Menu.filter(F.section == "support"))
-async def cb_support(callback: CallbackQuery, settings: Settings) -> None:
-    await show(callback, texts.support(settings), support_keyboard(settings.support_username))
-
-
-@router.message(Command("support"))
-async def cmd_support(message: Message, settings: Settings) -> None:
+@router.message(Command("site"))
+async def cmd_site(message: Message, settings: Settings) -> None:
     await message.answer(
-        texts.support(settings),
-        reply_markup=support_keyboard(settings.support_username),
+        texts.site(settings), reply_markup=site_keyboard(settings.site_url, settings.docs_link)
     )
 
 
-@router.message(Command("paysupport"))
-async def cmd_paysupport(message: Message, settings: Settings) -> None:
-    await message.answer(
-        texts.paysupport(settings),
-        reply_markup=support_keyboard(settings.support_username),
-    )
+@router.callback_query(Menu.filter(F.section == "site"))
+async def cb_site(callback: CallbackQuery, settings: Settings) -> None:
+    await show(callback, texts.site(settings), site_keyboard(settings.site_url, settings.docs_link))
 
 
 @router.message(Command("terms"))

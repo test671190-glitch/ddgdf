@@ -69,6 +69,8 @@ HELP = (
     "/api — как подключить\n"
     "/models — список моделей\n"
     "/faq — частые вопросы\n"
+    "/site — сайт и документация\n"
+    "/support — написать в поддержку\n"
     "/paysupport — помощь с оплатой\n"
     "/terms — условия"
 )
@@ -290,31 +292,69 @@ def faq_answer(question: str, answer: str) -> str:
     return f"<b>{escape(question)}</b>\n\n<blockquote>{escape(answer)}</blockquote>"
 
 
-def support(settings: Settings) -> str:
-    contact = (
-        f"Напишите нам: @{escape(settings.support_username)}"
-        if settings.support_username
-        else "Контакт поддержки скоро появится."
-    )
+def support(settings: Settings, *, payment: bool = False) -> str:
+    head = "<b>Помощь с оплатой</b>" if payment else "<b>Поддержка</b>"
+    lines = [
+        head,
+        "",
+        "Нажмите «Написать в поддержку» и отправьте вопрос одним сообщением — можно со "
+        "скриншотом. Ответ придёт сюда, в этот чат.",
+        "",
+        "<blockquote>Если вопрос об оплате, укажите способ оплаты и примерное время платежа, "
+        "для крипты — номер заказа. Чек Stars есть в истории переводов Telegram, чек "
+        "крипто-оплаты — в @CryptoBot.</blockquote>",
+    ]
+    if settings.support_username:
+        lines += ["", f"Или напишите напрямую: @{escape(settings.support_username)}"]
+    return "\n".join(lines)
+
+
+def support_prompt() -> str:
     return (
-        "<b>Поддержка</b>\n\n"
-        f"{contact}\n\n"
-        "<blockquote>По вопросам оплаты укажите ваш ID из «Профиля», способ оплаты и номер "
-        "заказа, если платили криптой.</blockquote>"
+        "<b>Сообщение в поддержку</b>\n\n"
+        "Напишите вопрос одним сообщением — текстом, со скриншотом или файлом. "
+        "Мы ответим сюда же."
     )
 
 
-def paysupport(settings: Settings) -> str:
-    contact = (
-        f"@{escape(settings.support_username)}"
-        if settings.support_username
-        else "администратору бота"
-    )
+def support_sent() -> str:
+    return "Сообщение отправлено в поддержку. Ответ придёт в этот чат."
+
+
+def support_unavailable() -> str:
+    return "Поддержка сейчас недоступна. Попробуйте чуть позже."
+
+
+def support_ticket(user_id: int, label: str, sub: Subscription | None) -> str:
+    """Карточка обращения для админа. label уже экранирован."""
+    if sub and sub.is_active:
+        plan = f"{tariff_name(sub.tariff)} до {fmt_dt(sub.expires_at)}"
+    elif sub:
+        plan = f"закончилась {fmt_dt(sub.expires_at)}"
+    else:
+        plan = "нет"
     return (
-        "<b>Помощь с оплатой</b>\n\n"
-        f"Если оплата прошла, но доступ не появился, или нужен возврат — напишите {contact}.\n\n"
-        "<blockquote>Укажите ваш ID из «Профиля» и дату платежа. Чек об оплате Stars есть в "
-        "истории переводов Telegram, чек крипто-оплаты — в @CryptoBot.</blockquote>"
+        "📩 <b>Обращение в поддержку</b>\n"
+        f"От: {label} · <code>{user_id}</code>\n"
+        f"Подписка: {plan}\n\n"
+        "Ответьте на это или следующее сообщение реплаем — ответ уйдёт клиенту."
+    )
+
+
+def support_answer(text: str | None) -> str:
+    head = "<b>Ответ поддержки</b>"
+    return f"{head}\n\n{escape(text)}" if text else head
+
+
+def site(settings: Settings) -> str:
+    return (
+        f"<b>Сайт {SHOP_NAME}</b>\n"
+        f"{escape(settings.site_url)}\n\n"
+        "<blockquote>• Тарифы и их сравнение\n"
+        f"• Документация API: подключение, примеры кода, все {TOTAL_MODELS} моделей\n"
+        "• Настройка Cursor, Claude Code, Cline и других программ\n"
+        "• Частые вопросы</blockquote>\n\n"
+        "Купить подписку можно и с сайта — кнопка «Купить» откроет этого бота на нужном тарифе."
     )
 
 
@@ -326,7 +366,7 @@ def terms(settings: Settings) -> str:
         "2. Оплата принимается в Telegram Stars или криптовалютой через @CryptoBot. "
         "После оплаты бот выдаёт API-ключ.\n"
         "3. Ключ личный, его нельзя публиковать и передавать третьим лицам.\n"
-        "4. По вопросам оплаты и возврата — /paysupport."
+        "4. Вопросы по оплате и доступу — /support."
     )
 
 

@@ -93,8 +93,7 @@ class CryptoPayments:
             self.settings,
             f"💰 Оплата криптой: пользователь <code>{order.user_id}</code>, "
             f"тариф <b>{tariff.title}</b>, ${tariff.price_usd}\n"
-            f"Заказ #{order.id}, счёт Crypto Pay {order.invoice_id}\n"
-            f"Возврат: <code>/refund crypto:{order.id}</code>",
+            f"Заказ #{order.id}, счёт Crypto Pay {order.invoice_id}",
         )
 
 

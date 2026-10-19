@@ -10,11 +10,14 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
 from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramRetryAfter
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
     Chat,
     Message,
     MessageAutoDeleteTimerChanged,
+    MessageId,
+    PhotoSize,
     SuccessfulPayment,
     Update,
     User,
@@ -23,7 +26,7 @@ from aiogram.types import (
 from bot.config import Settings
 from bot.db import Database, utcnow
 from bot.handlers import get_routers
-from bot.keyboards.inline import CryptoCheck, Menu, RotateKey
+from bot.keyboards.inline import CryptoCheck, Menu, RotateKey, SupportWrite
 from bot.middlewares.logging import LoggingMiddleware
 from bot.middlewares.user import UserMiddleware
 from bot.services.crypto import CryptoPayments
@@ -48,6 +51,8 @@ class FakeSession(BaseSession):
         name = type(method).__name__
         if name in ("AnswerCallbackQuery", "DeleteMessage"):
             return True
+        if name == "CopyMessage":
+            return MessageId(message_id=next(_ids))
         if name in ("SendMessage", "EditMessageText"):
             return Message(
                 message_id=next(_ids),
@@ -121,6 +126,9 @@ def callback_update(data: str, uid: int = 42) -> Update:
 
 @pytest.fixture
 def tg():
+    # Dispatcher общий на все тесты: состояние «пишет в поддержку» не должно переходить
+    # из теста в тест
+    dispatcher().fsm.storage = MemoryStorage()
     session = FakeSession()
     bot = Bot(
         token="4242:TEST",
@@ -228,3 +236,111 @@ async def test_paid_crypto_check_shows_key(tg):
     (edit,) = session.named("EditMessageText")
     assert await db.get_client_key(42) in edit.text
     await db.close()
+
+
+def reply_update(reply_to_id: int, uid: int = 1000, **extra) -> Update:
+    """Админ отвечает реплаем на сообщение бота с id reply_to_id."""
+    replied = Message(
+        message_id=reply_to_id,
+        date=datetime.now(),
+        chat=Chat(id=uid, type="private"),
+        from_user=BOT_USER,
+        text="обращение",
+    )
+    return message_update(uid=uid, reply_to_message=replied, **extra)
+
+
+def sent_to(session: FakeSession, chat_id: int) -> list:
+    return [
+        m
+        for m in session.calls
+        if type(m).__name__ in ("SendMessage", "CopyMessage") and m.chat_id == chat_id
+    ]
+
+
+async def ask_support(bot, session, db, text="Не пришёл ключ после оплаты"):
+    """Клиент 42 нажимает «Написать в поддержку» и отправляет вопрос."""
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update(text), db)
+    card, copy = sent_to(session, 1000)
+    return card, copy
+
+
+async def test_support_question_reaches_admin_and_answer_reaches_client(tg, db):
+    """Раньше поддержки не было вовсе: без SUPPORT_USERNAME бот писал «контакт скоро
+    появится». Теперь вопрос приходит админу, а ответ реплаем — клиенту."""
+    bot, session = tg
+    await db.grant(42, "pro", 30)
+    card, copy = await ask_support(bot, session, db)
+    assert "Обращение в поддержку" in card.text and "<code>42</code>" in card.text
+    assert copy.from_chat_id == 42  # само сообщение клиента скопировано админу
+    assert "отправлено в поддержку" in sent_to(session, 42)[-1].text
+
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    await feed(bot, reply_update(card_id, text="Ключ выдан, проверьте профиль"), db)
+    (answer,) = sent_to(session, 42)
+    assert "Ответ поддержки" in answer.text and "проверьте профиль" in answer.text
+    labels = [b.text for row in answer.reply_markup.inline_keyboard for b in row]
+    assert "Ответить" in labels
+    assert "отправлен клиенту" in sent_to(session, 1000)[-1].text
+
+
+async def test_admin_photo_answer_is_copied(tg, db):
+    bot, session = tg
+    await ask_support(bot, session, db)
+    session.calls.clear()
+    copy_id = (await db._all("SELECT message_id FROM support_messages ORDER BY message_id"))[-1]
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    await feed(bot, reply_update(copy_id["message_id"], photo=photo, caption="вот так"), db)
+    header, copied = sent_to(session, 42)
+    assert "Ответ поддержки" in header.text
+    assert type(copied).__name__ == "CopyMessage" and copied.from_chat_id == 1000
+
+
+async def test_admin_reply_to_other_message_is_not_forwarded(tg, db):
+    bot, session = tg
+    await feed(bot, reply_update(999_999, text="просто реплай"), db)
+    assert sent_to(session, 42) == []
+
+
+async def test_cancelled_support_does_not_forward_next_message(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, callback_update(SupportWrite(cancel=True).pack()), db)
+    await feed(bot, message_update("привет"), db)
+    assert sent_to(session, 1000) == []
+
+
+async def test_start_cancels_support(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("/start"), db)
+    await feed(bot, message_update("привет"), db)
+    assert sent_to(session, 1000) == []
+
+
+async def test_unknown_command_is_not_sent_to_support(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("/whatever"), db)
+    assert sent_to(session, 1000) == []
+
+
+async def test_support_without_admins_says_unavailable(tg, db):
+    bot, session = tg
+    await feed(
+        bot, callback_update(SupportWrite().pack()), db, Settings(_env_file=None, bot_token="1:x")
+    )
+    (answer,) = session.named("AnswerCallbackQuery")
+    assert "недоступна" in answer.text
+
+
+async def test_site_section_links_to_site_and_docs(tg, db):
+    """В боте не было ничего о сайте."""
+    bot, session = tg
+    await feed(bot, callback_update(Menu(section="site").pack()), db)
+    (edit,) = session.named("EditMessageText")
+    assert "unknown-shop.netlify.app" in edit.text
+    urls = [b.url for row in edit.reply_markup.inline_keyboard for b in row if b.url]
+    assert urls == ["https://unknown-shop.netlify.app", "https://unknown-shop.netlify.app/api.html"]

@@ -13,7 +13,7 @@ BACK = "← В меню"
 
 
 class Menu(CallbackData, prefix="menu"):
-    section: str  # main | tariffs | models | profile | api | faq | support
+    section: str  # main | tariffs | models | profile | api | faq | site | support
 
 
 class ModelsPage(CallbackData, prefix="models"):
@@ -48,6 +48,12 @@ class RotateKey(CallbackData, prefix="rotate"):
     confirm: bool
 
 
+class SupportWrite(CallbackData, prefix="support"):
+    """Начать или отменить сообщение в поддержку."""
+
+    cancel: bool = False
+
+
 def rotate_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Да, перевыпустить", callback_data=RotateKey(confirm=True), style=DANGER)
@@ -77,8 +83,9 @@ def main_menu(has_subscription: bool = False) -> InlineKeyboardMarkup:
     builder.button(text="Подключение", callback_data=Menu(section="api"))
     builder.button(text="Модели", callback_data=Menu(section="models"))
     builder.button(text="Вопросы", callback_data=Menu(section="faq"))
+    builder.button(text="Сайт", callback_data=Menu(section="site"))
     builder.button(text="Поддержка", callback_data=Menu(section="support"))
-    builder.adjust(1, 2, 2, 1)
+    builder.adjust(1, 2, 2, 2)
     return builder.as_markup()
 
 
@@ -195,12 +202,37 @@ def api_keyboard(docs_url: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def support_keyboard(support_username: str) -> InlineKeyboardMarkup:
+def site_keyboard(site_url: str, docs_url: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    if support_username:
-        builder.button(
-            text="Написать в поддержку", url=f"https://t.me/{support_username}", style=PRIMARY
-        )
+    if site_url:
+        builder.button(text="Открыть сайт", url=site_url, style=PRIMARY)
+    if docs_url:
+        builder.button(text="Документация API", url=docs_url)
     builder.button(text=BACK, callback_data=Menu(section="main"))
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def support_keyboard(support_username: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Написать в поддержку", callback_data=SupportWrite(), style=PRIMARY)
+    if support_username:
+        builder.button(text=f"@{support_username}", url=f"https://t.me/{support_username}")
+    builder.button(text=BACK, callback_data=Menu(section="main"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def support_cancel_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Отмена", callback_data=SupportWrite(cancel=True))
+    return builder.as_markup()
+
+
+def support_answer_keyboard() -> InlineKeyboardMarkup:
+    """Под ответом поддержки: продолжить переписку или вернуться в меню."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Ответить", callback_data=SupportWrite(), style=PRIMARY)
+    builder.button(text=BACK, callback_data=Menu(section="main"))
+    builder.adjust(2)
     return builder.as_markup()

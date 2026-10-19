@@ -34,6 +34,8 @@ COMMANDS = [
     BotCommand(command="models", description="Список моделей"),
     BotCommand(command="api", description="Как подключить API"),
     BotCommand(command="faq", description="Частые вопросы"),
+    BotCommand(command="site", description="Сайт и документация"),
+    BotCommand(command="support", description="Написать в поддержку"),
     BotCommand(command="paysupport", description="Помощь с оплатой"),
     BotCommand(command="terms", description="Условия"),
 ]

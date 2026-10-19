@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
@@ -107,62 +107,11 @@ async def test_renewal_during_reminder_keeps_next_reminder(db):
     assert [s.user_id for s in await db.due_reminders(timedelta(days=3))] == [1]
 
 
-async def test_refund_ends_single_period(db):
-    await db.add_keys("pro", ["k1"])
-    await db.activate_paid(1, "pro", 30, 2541, "c1")
-    refund = await db.refund("c1", 30)
-    assert refund.revoked_key == "k1"
-    assert not (await db.get_subscription(1)).is_active
-    assert await db.refund("c1", 30) is None
-
-
 async def expire_now(db, user_id, ago=timedelta(minutes=1)):
     await db.conn.execute(
         "UPDATE subscriptions SET expires_at=? WHERE user_id=?", (_iso(utcnow() - ago), user_id)
     )
     await db.conn.commit()
-
-
-async def test_refund_of_old_payment_keeps_new_period(db):
-    """Старый период давно кончился, клиент купил снова. Возврат старого платежа не должен
-    отнимать новый оплаченный период."""
-    await db.add_keys("pro", ["k1", "k2"])
-    await db.activate_paid(1, "pro", 30, 2541, "old")
-    await db.conn.execute(
-        "UPDATE payments SET created_at=? WHERE charge_id='old'",
-        (_iso(utcnow() - timedelta(days=90)),),
-    )
-    await expire_now(db, 1, timedelta(days=60))
-    await db.expire_due()
-    await db.activate_paid(1, "pro", 30, 2541, "new")
-    refund = await db.refund("old", 30)
-    assert not refund.adjusted and refund.revoked_key is None
-    assert (await db.get_subscription(1)).is_active
-    assert await db.get_active_key(1) is not None
-
-
-async def test_refund_of_payment_burned_by_tariff_switch(db):
-    """Pro → Unlimited (дни Pro сгорели) → снова Pro. Возврат первого Pro не трогает второй."""
-    await db.add_keys("pro", ["k1", "k2"])
-    await db.add_keys("unlimited", ["u1"])
-    await db.activate_paid(1, "pro", 30, 2541, "p1")
-    await db.activate_paid(1, "unlimited", 30, 6160, "u1")
-    await db.activate_paid(1, "pro", 30, 2541, "p2")
-    refund = await db.refund("p1", 30)
-    assert not refund.adjusted
-    assert (await db.get_subscription(1)).is_active
-
-
-async def test_refund_of_first_of_two_renewals_takes_its_days(db):
-    """Клиент случайно оплатил дважды подряд. Возврат любого из платежей списывает 30 дней."""
-    await db.add_keys("pro", ["k1"])
-    await db.activate_paid(1, "pro", 30, 2541, "p1")
-    second = await db.activate_paid(1, "pro", 30, 2541, "p2")
-    refund = await db.refund("p1", 30)
-    assert refund.adjusted
-    sub = await db.get_subscription(1)
-    assert sub.expires_at == second.expires_at - timedelta(days=30)
-    assert (await db.get_active_key(1)).key == "k1"
 
 
 async def test_stats(db):
@@ -466,54 +415,6 @@ async def test_migration_adds_columns(tmp_path):
     await database.close()
 
 
-async def backdate(db, charge_id, ago):
-    await db.conn.execute(
-        "UPDATE payments SET created_at=? WHERE charge_id=?", (_iso(utcnow() - ago), charge_id)
-    )
-    await db.conn.commit()
-
-
-async def test_refund_after_refunded_tariff_switch_keeps_new_period(db):
-    """A pro → B unlimited (дни A сгорели) → C pro. Сначала вернули B, потом A: возвращённый B
-    выпадал из проверки, и возврат A отнимал 30 дней у периода, оплаченного C."""
-    await db.add_keys("pro", ["k1", "k2"])
-    await db.add_keys("unlimited", ["u1"])
-    await db.activate_paid(1, "pro", 30, 1, "A")
-    await db.activate_paid(1, "unlimited", 30, 1, "B")
-    await db.activate_paid(1, "pro", 30, 1, "C")
-    assert not (await db.refund("B", 30)).adjusted
-    refund = await db.refund("A", 30)
-    assert not refund.adjusted and refund.revoked_key is None
-    assert (await db.get_subscription(1)).is_active
-
-
-async def test_refund_of_finished_payment_keeps_granted_period(db):
-    """Период платежа давно прошёл, админ выдал /grant. Возврат старого платежа отнимал
-    дни у выданного периода."""
-    await db.add_keys("pro", ["k1"])
-    await db.activate_paid(1, "pro", 30, 1, "A")
-    await backdate(db, "A", timedelta(days=40))
-    await expire_now(db, 1, timedelta(days=10))
-    await db.expire_due()
-    granted = await db.grant(1, "pro", 30)
-    refund = await db.refund("A", 30)
-    assert not refund.adjusted
-    assert (await db.get_subscription(1)).expires_at == granted.expires_at
-
-
-async def test_refund_of_prepaid_periods_takes_days(db):
-    """Три периода куплены сразу, через 35 дней — продление. Возврат первого платежа
-    дни не списывал: проверка смотрела на окно одного платежа, а не на конец подписки."""
-    await db.add_keys("pro", ["k1"])
-    for charge in ("A", "B", "C"):
-        await db.activate_paid(1, "pro", 30, 1, charge)
-        await backdate(db, charge, timedelta(days=35))
-    before = (await db.activate_paid(1, "pro", 30, 1, "D")).expires_at
-    refund = await db.refund("A", 30)
-    assert refund.adjusted
-    assert (await db.get_subscription(1)).expires_at == before - timedelta(days=30)
-
-
 async def test_wrongly_replaced_key_can_be_returned_to_pool():
     """Ключ, снятый через /givekey как нерабочий, мог оказаться рабочим (админ выдал ключ
     по старому алерту, хотя клиент уже получил его автоматически). Повторный /addkeys
@@ -565,81 +466,3 @@ async def test_reminder_marked_for_expiry_edited_by_hand(db):
     (due,) = await db.due_reminders(timedelta(days=3))
     await db.mark_reminded(1, due.expires_at)
     assert await db.due_reminders(timedelta(days=3)) == []
-
-
-async def test_refund_takes_only_unused_days_of_payment(db):
-    """Период платежа сохранён: возврат отнимает только ещё не прошедшие дни этого платежа,
-    а не 30 дней вслепую (которые съели бы и следующий оплаченный период)."""
-    await db.add_keys("pro", ["k1"])
-    await db.activate_paid(1, "pro", 30, 1, "A")
-    await db.activate_paid(1, "pro", 30, 1, "B")
-    # прошло 10 дней: сдвигаем всё на 10 дней назад
-    shift = timedelta(days=10)
-    for column in ("period_start", "period_end"):
-        rows = await db._all(f"SELECT charge_id, {column} FROM payments")
-        for row in rows:
-            moved = datetime.fromisoformat(row[column]) - shift
-            await db.conn.execute(
-                f"UPDATE payments SET {column}=? WHERE charge_id=?", (_iso(moved), row["charge_id"])
-            )
-    sub = await db.get_subscription(1)
-    await db.conn.execute(
-        "UPDATE subscriptions SET expires_at=? WHERE user_id=1", (_iso(sub.expires_at - shift),)
-    )
-    await db.conn.commit()
-    before = (await db.get_subscription(1)).expires_at
-    refund = await db.refund("A", 30)
-    assert refund.adjusted
-    # у A осталось 20 неиспользованных дней — ровно их и отняли, период B цел
-    assert (await db.get_subscription(1)).expires_at == before - timedelta(days=20)
-
-
-async def test_refund_of_payment_without_saved_period_uses_estimate(db):
-    """Платежи, сделанные до сохранения периодов, считаются по прежней оценке."""
-    await db.add_keys("pro", ["k1"])
-    await db.activate_paid(1, "pro", 30, 1, "A")
-    await db.activate_paid(1, "pro", 30, 1, "B")
-    await db.conn.execute("UPDATE payments SET period_start=NULL, period_end=NULL, chain=NULL")
-    await db.conn.commit()
-    before = (await db.get_subscription(1)).expires_at
-    assert (await db.refund("A", 30)).adjusted
-    assert (await db.get_subscription(1)).expires_at == before - timedelta(days=30)
-
-
-async def test_migration_adds_payment_periods(tmp_path):
-    """База со старой схемой: колонки периода добавляются, старые платежи остаются без него,
-    новая подписка после окончания старой начинает цепочку."""
-    import aiosqlite
-
-    path = tmp_path / "old.db"
-    async with aiosqlite.connect(path) as conn:
-        await conn.executescript(
-            "CREATE TABLE subscriptions (user_id INTEGER PRIMARY KEY, tariff TEXT NOT NULL, "
-            "expires_at TEXT NOT NULL, notified_soon INTEGER NOT NULL DEFAULT 0, "
-            "notified_expired INTEGER NOT NULL DEFAULT 0);"
-            "CREATE TABLE payments (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "user_id INTEGER NOT NULL, tariff TEXT NOT NULL, stars INTEGER NOT NULL, "
-            "charge_id TEXT NOT NULL UNIQUE, "
-            "created_at TEXT NOT NULL, refunded INTEGER NOT NULL DEFAULT 0);"
-        )
-        await conn.execute(
-            "INSERT INTO payments (user_id, tariff, stars, charge_id, created_at) "
-            "VALUES (1, 'pro', 1, 'old', ?)",
-            (_iso(utcnow()),),
-        )
-        await conn.execute(
-            "INSERT INTO subscriptions (user_id, tariff, expires_at) VALUES (1, 'pro', ?)",
-            (_iso(utcnow() + timedelta(days=30)),),
-        )
-        await conn.commit()
-    database = Database(str(path))
-    await database.connect()
-    try:
-        old = await database._one("SELECT period_start, chain FROM payments WHERE charge_id='old'")
-        assert old["period_start"] is None and old["chain"] is None
-        # продление старой подписки: цепочка неизвестна — возврат пойдёт по оценке
-        await database.activate_paid(1, "pro", 30, 1, "new")
-        assert (await database.refund("new", 30)).adjusted
-    finally:
-        # иначе при падении поток базы не даёт pytest завершиться
-        await database.close()

@@ -2,7 +2,7 @@
 
 Ключи в пуле привязаны к тарифу. При покупке пользователь получает свободный ключ
 своего тарифа. Ключ, который больше не должен работать (подписка закончилась,
-сменился тариф, возврат), получает статус "revoke" — админ деактивирует его в панели провайдера.
+сменился тариф), получает статус "revoke" — админ деактивирует его в панели провайдера.
 """
 
 import asyncio
@@ -27,8 +27,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     tariff TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     notified_soon INTEGER NOT NULL DEFAULT 0,
-    notified_expired INTEGER NOT NULL DEFAULT 0,
-    chain INTEGER  -- номер непрерывной цепочки продлений (смена тарифа начинает новую)
+    notified_expired INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,11 +36,7 @@ CREATE TABLE IF NOT EXISTS payments (
     stars INTEGER NOT NULL,
     charge_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
-    refunded INTEGER NOT NULL DEFAULT 0,
-    -- оплаченный период и цепочка подписки, в которую он вошёл (NULL у старых платежей)
-    period_start TEXT,
-    period_end TEXT,
-    chain INTEGER
+    refunded INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +78,15 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     user_id INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+-- Обращения в поддержку: какое сообщение в чате админа относится к какому клиенту.
+-- Админ отвечает на него реплаем, и бот пересылает ответ этому клиенту
+CREATE TABLE IF NOT EXISTS support_messages (
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
 """
 
 # Колонки, добавленные после первого релиза: (таблица, колонка, тип)
@@ -91,10 +95,6 @@ MIGRATIONS = (
     ("crypto_orders", "pay_url", "TEXT"),
     ("crypto_orders", "expires_at", "TEXT"),
     ("api_keys", "exposed", "INTEGER NOT NULL DEFAULT 1"),
-    ("payments", "period_start", "TEXT"),
-    ("payments", "period_end", "TEXT"),
-    ("payments", "chain", "INTEGER"),
-    ("subscriptions", "chain", "INTEGER"),
 )
 
 CLIENT_KEY_PREFIX = "sk-us-"
@@ -146,14 +146,6 @@ class Payment:
     stars: int
     charge_id: str
     refunded: bool
-
-
-@dataclass(frozen=True)
-class Refund:
-    user_id: int
-    revoked_key: str | None
-    # False — неизвестно, входит ли платёж в текущий период: дни не списаны, проверить вручную
-    adjusted: bool = True
 
 
 @dataclass(frozen=True)
@@ -269,37 +261,24 @@ class Database:
             )
             if cur.rowcount == 0:
                 return None
-            return await self._apply(user_id, tariff, days, now, charge_id)
+            return await self._apply(user_id, tariff, days, now)
 
     async def grant(self, user_id: int, tariff: str, days: int) -> Activation:
         async with self._tx():
             return await self._apply(user_id, tariff, days, utcnow())
 
-    async def _apply(
-        self, user_id: int, tariff: str, days: int, now: datetime, charge_id: str | None = None
-    ) -> Activation:
+    async def _apply(self, user_id: int, tariff: str, days: int, now: datetime) -> Activation:
         sub = await self.get_subscription(user_id)
         extended = sub is not None and sub.tariff == tariff and sub.expires_at > now
         start = sub.expires_at if extended and sub else now
         expires = start + timedelta(days=days)
-        # Цепочка — непрерывная подписка одного тарифа. Продление её сохраняет, смена тарифа
-        # или покупка после окончания начинает новую: дни прежней цепочки уже не вернуть
-        row = await self._one("SELECT chain FROM subscriptions WHERE user_id=?", (user_id,))
-        current_chain = row["chain"] if row else None
-        chain = current_chain if extended else (current_chain or 0) + 1
         await self.conn.execute(
             "INSERT INTO subscriptions (user_id, tariff, expires_at, notified_soon, "
-            "notified_expired, chain) VALUES (?, ?, ?, 0, 0, ?) ON CONFLICT(user_id) DO UPDATE "
-            "SET tariff=excluded.tariff, expires_at=excluded.expires_at, notified_soon=0, "
-            "notified_expired=0, chain=excluded.chain",
-            (user_id, tariff, _iso(expires), chain),
+            "notified_expired) VALUES (?, ?, ?, 0, 0) ON CONFLICT(user_id) DO UPDATE SET "
+            "tariff=excluded.tariff, expires_at=excluded.expires_at, notified_soon=0, "
+            "notified_expired=0",
+            (user_id, tariff, _iso(expires)),
         )
-        if charge_id is not None:
-            # Какой период оплатил платёж: по нему возврат отнимает ровно эти дни
-            await self.conn.execute(
-                "UPDATE payments SET period_start=?, period_end=?, chain=? WHERE charge_id=?",
-                (_iso(start), _iso(expires), chain, charge_id),
-            )
 
         current = await self.get_active_key(user_id)
         revoked = None
@@ -512,7 +491,7 @@ class Database:
                 "VALUES (?, ?, 0, ?, ?)",
                 (order.user_id, order.tariff, charge_id, _iso(now)),
             )
-            return order, await self._apply(order.user_id, order.tariff, days, now, charge_id)
+            return order, await self._apply(order.user_id, order.tariff, days, now)
 
     # --- вход на сайт через бота ---
 
@@ -577,6 +556,24 @@ class Database:
         async with self._tx() as conn:
             await conn.execute("DELETE FROM web_sessions WHERE id=?", (session_id,))
 
+    # --- поддержка ---
+
+    async def add_support_message(self, chat_id: int, message_id: int, user_id: int) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO support_messages "
+                "(chat_id, message_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+                (chat_id, message_id, user_id, _iso(utcnow())),
+            )
+
+    async def support_user(self, chat_id: int, message_id: int) -> int | None:
+        """Клиент, чьё обращение админ получил сообщением message_id."""
+        row = await self._one(
+            "SELECT user_id FROM support_messages WHERE chat_id=? AND message_id=?",
+            (chat_id, message_id),
+        )
+        return row["user_id"] if row else None
+
     # --- платежи ---
 
     async def get_payment(self, charge_id: str) -> Payment | None:
@@ -586,54 +583,6 @@ class Database:
         return Payment(
             row["user_id"], row["tariff"], row["stars"], row["charge_id"], bool(row["refunded"])
         )
-
-    async def refund(self, charge_id: str, days: int) -> Refund | None:
-        """Помечает платёж возвращённым и отнимает оплаченные дни у подписки."""
-        now = utcnow()
-        async with self._tx() as conn:
-            pay = await self.get_payment(charge_id)
-            if pay is None or pay.refunded:
-                return None
-            # Отнимаем только дни этого платежа, которые ещё впереди в текущей подписке:
-            # возврат старого платежа не должен обрезать новый, отдельно оплаченный период
-            period = await self._one(
-                "SELECT p.period_start, p.period_end, p.chain, s.chain AS sub_chain "
-                "FROM payments p LEFT JOIN subscriptions s ON s.user_id=p.user_id "
-                "WHERE p.charge_id=?",
-                (charge_id,),
-            )
-            # Платежи до сохранения периодов: прежняя оценка по цепочке платежей
-            history = await self._all(
-                "SELECT tariff, created_at, refunded FROM payments WHERE user_id=? "
-                "AND id >= (SELECT id FROM payments WHERE charge_id=?) ORDER BY id",
-                (pay.user_id, charge_id),
-            )
-            await conn.execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge_id,))
-            if period["chain"] is not None and period["sub_chain"] is not None:
-                start = datetime.fromisoformat(period["period_start"])
-                end = datetime.fromisoformat(period["period_end"])
-                if period["chain"] != period["sub_chain"] or end <= now:
-                    return Refund(pay.user_id, None, adjusted=False)
-                remove = end - max(start, now)
-            elif _in_current_period(history, pay.tariff, timedelta(days=days), now):
-                remove = timedelta(days=days)
-            else:
-                return Refund(pay.user_id, None, adjusted=False)
-            sub = await self.get_subscription(pay.user_id)
-            revoked = None
-            if sub and sub.tariff == pay.tariff:
-                expires = sub.expires_at - remove
-                ended = expires <= now
-                if ended:
-                    expires = now
-                    key = await self.get_active_key(pay.user_id)
-                    if key:
-                        revoked = await self._revoke(key.id)
-                await conn.execute(
-                    "UPDATE subscriptions SET expires_at=?, notified_expired=? WHERE user_id=?",
-                    (_iso(expires), int(ended), pay.user_id),
-                )
-            return Refund(pay.user_id, revoked)
 
     # --- напоминания и окончание подписок ---
 
@@ -742,33 +691,6 @@ class Database:
             "stars": pays["stars"] if pays else 0,
             "crypto": {r["tariff"]: r["n"] for r in crypto},
         }
-
-
-def _in_current_period(
-    chain: list[aiosqlite.Row], tariff: str, period: timedelta, now: datetime
-) -> bool:
-    """Дни платежа chain[0] ещё впереди в текущей подписке.
-
-    chain — этот платёж и все следующие платежи клиента, в том числе возвращённые.
-    Оплаченный конец считаем по цепочке продлений: платёж, сделанный до конца, продлевает
-    его, после конца — начинает новый период (старый тогда уже прошёл). Любая смена тарифа,
-    даже возвращённая позже, сжигает старые дни. Возвращённые продления дней не добавляют.
-    Платёж входит в подписку, если цепочка непрерывна и её конец ещё не наступил.
-    """
-    end: datetime | None = None
-    for row in chain:
-        if row["tariff"] != tariff:
-            return False
-        if end is not None and row["refunded"]:
-            continue
-        created = datetime.fromisoformat(row["created_at"])
-        if end is None:
-            end = created + period
-        elif created < end:
-            end += period
-        else:
-            return False
-    return end is not None and end > now
 
 
 def _subscription(row: aiosqlite.Row) -> Subscription:

@@ -1,15 +1,12 @@
 """Обработчики бота на входных данных, которые пользователь может ввести руками."""
 
-import asyncio
 import html
 import re
 from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
 from aiogram.filters import CommandObject
-from aiogram.methods import RefundStarPayment
 
 from bot.config import Settings
 from bot.db import Database, _iso, utcnow
@@ -17,7 +14,6 @@ from bot.handlers.admin import (
     cmd_addkeys,
     cmd_givekey,
     cmd_grant,
-    cmd_refund,
     cmd_revoke_list,
     cmd_user,
 )
@@ -41,17 +37,11 @@ class FakeMessage:
 
 
 class FakeBot:
-    def __init__(self, refund_errors=()) -> None:
+    def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
-        self.refund_errors = list(refund_errors)
 
     async def send_message(self, chat_id, text, **_):
         self.sent.append((chat_id, text))
-
-    async def refund_star_payment(self, user_id, telegram_payment_charge_id):
-        if self.refund_errors:
-            raise self.refund_errors.pop(0)
-        return True
 
 
 SETTINGS = Settings(bot_token="1:x", admin_ids=[1000])
@@ -124,49 +114,6 @@ async def test_start_with_broken_login_token_shows_menu(db, token):
     await cmd_start(message, start("login_" + token), db, Settings(bot_token="1:x"), None)
     assert len(message.answers) == 1
     assert "Привет" in message.answers[0][0]
-
-
-async def test_refund_after_lost_telegram_answer_still_closes_subscription(db):
-    """Telegram вернул Stars, но ответ не дошёл (таймаут). Повторный /refund получает
-    CHARGE_ALREADY_REFUNDED: подписку и ключ всё равно надо закрыть, а не оставить клиенту
-    и доступ, и деньги."""
-    await db.add_keys("pro", ["k1"])
-    await db.activate_paid(7, "pro", 30, 2541, "ch-1")
-    method = RefundStarPayment(user_id=7, telegram_payment_charge_id="ch-1")
-    bot = FakeBot(
-        refund_errors=[
-            TelegramNetworkError(method=method, message="Request timeout error"),
-            TelegramBadRequest(method=method, message="Bad Request: CHARGE_ALREADY_REFUNDED"),
-        ]
-    )
-    first = FakeMessage()
-    await cmd_refund(first, admin_command("refund", "ch-1"), bot, db, SETTINGS)
-    assert "повторите" in first.answers[0][0]
-    assert not (await db.get_payment("ch-1")).refunded
-
-    retry = FakeMessage()
-    await cmd_refund(retry, admin_command("refund", "ch-1"), bot, db, SETTINGS)
-    assert retry.answers[0][0].startswith("✅")
-    assert (await db.get_payment("ch-1")).refunded
-    assert not (await db.get_subscription(7)).is_active
-
-
-async def test_crypto_refund_sent_twice_is_reported_once(db):
-    """Две одновременные /refund crypto:N: админ не должен дважды получить «верните крипту»,
-    а клиент — два сообщения о возврате."""
-    order = await db.create_crypto_order(7, "pro")
-    await db.set_crypto_invoice(order.id, 1, "https://t.me/x", utcnow() + timedelta(hours=1))
-    await db.approve_crypto_order(order.id, 30)
-    bot = FakeBot()
-    first, second = FakeMessage(), FakeMessage()
-    command = admin_command("refund", f"crypto:{order.id}")
-    await asyncio.gather(
-        cmd_refund(first, command, bot, db, SETTINGS),
-        cmd_refund(second, command, bot, db, SETTINGS),
-    )
-    replies = [text for text, _ in first.answers + second.answers]
-    assert sum(text.startswith("✅") for text in replies) == 1
-    assert [chat for chat, _ in bot.sent] == [7]
 
 
 @pytest.mark.parametrize(
@@ -272,18 +219,6 @@ async def test_payment_db_error_is_reported_to_admin(db):
     assert any(chat == 1000 and "ch-lost" in text for chat, text in bot.sent)
     assert "Оплата получена" in message.answers[0][0]
     await db.connect()  # фикстура закроет базу ещё раз
-
-
-async def test_refund_telegram_5xx_answers_admin(db):
-    """Ошибку 5xx Telegram при возврате никто не ловил: админ оставался без ответа,
-    хотя Stars могли уже вернуться."""
-    await db.activate_paid(7, "pro", 30, 2541, "ch-1")
-    method = RefundStarPayment(user_id=7, telegram_payment_charge_id="ch-1")
-    bot = FakeBot(refund_errors=[TelegramServerError(method=method, message="Bad Gateway")])
-    message = FakeMessage()
-    await cmd_refund(message, admin_command("refund", "ch-1"), bot, db, SETTINGS)
-    assert "повторите" in message.answers[0][0]
-    assert not (await db.get_payment("ch-1")).refunded
 
 
 async def test_addkeys_single_key_without_tariff_is_deleted(db):

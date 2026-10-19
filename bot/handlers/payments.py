@@ -196,7 +196,7 @@ async def on_successful_payment(
             f"charge_id <code>{escape(payment.telegram_payment_charge_id)}</code>",
         )
         await message.answer(
-            "Оплата получена, но тариф не распознан. Мы уже разбираемся — напишите в /paysupport."
+            "Оплата получена, но тариф не распознан. Мы уже разбираемся — напишите в /support."
         )
         return
 
@@ -221,7 +221,7 @@ async def on_successful_payment(
         )
         await message.answer(
             "Оплата получена, но доступ не выдался из-за сбоя. Мы уже знаем и начислим его "
-            "вручную, напишите в /paysupport, если что-то не так."
+            "вручную, напишите в /support, если что-то не так."
         )
         return
     if act is None:
@@ -235,14 +235,4 @@ async def on_successful_payment(
         f"💰 Оплата: {user_label(user)} (<code>{user.id}</code>), тариф <b>{tariff.title}</b>, "
         f"⭐ {payment.total_amount}\n"
         f"charge_id: <code>{escape(payment.telegram_payment_charge_id)}</code>",
-    )
-
-
-@router.message(F.refunded_payment)
-async def on_refunded_payment(message: Message) -> None:
-    """Служебное сообщение Telegram о возврате Stars. Клиента уже уведомил /refund —
-    без этого обработчика сообщение попадало в fallback и клиент получал «Не понял запрос»."""
-    logger.info(
-        "Возврат Stars подтверждён Telegram: %s",
-        message.refunded_payment.telegram_payment_charge_id,
     )

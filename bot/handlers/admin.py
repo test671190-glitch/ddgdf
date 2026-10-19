@@ -3,19 +3,14 @@
 from html import escape
 
 from aiogram import Bot, Router
-from aiogram.exceptions import (
-    TelegramBadRequest,
-    TelegramNetworkError,
-    TelegramRetryAfter,
-    TelegramServerError,
-)
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from bot import texts
 from bot.catalog import TARIFFS
 from bot.config import Settings
-from bot.db import CRYPTO_PREFIX, Database, KeyConflictError
+from bot.db import Database, KeyConflictError
 from bot.filters.admin import IsAdmin
 from bot.keyboards.inline import profile_keyboard
 from bot.services.access import deliver_activation, deliver_waiting, revoke_notice, shown_key
@@ -36,7 +31,6 @@ ADMIN_HELP = (
     "/givekey <i>user_id</i> <i>ключ</i> — выдать ключ вручную\n"
     "/grant <i>user_id</i> <i>тариф</i> [<i>дней</i>] — начислить подписку без оплаты\n"
     "/user <i>user_id</i> — информация о пользователе\n"
-    "/refund <i>charge_id</i> — вернуть Stars и отнять дни (для крипты: crypto:номер)\n"
     "/revoke_list — ключи, которые надо деактивировать в панели провайдера\n"
     "/revoked <i>ключ</i> — отметить ключ деактивированным"
 )
@@ -218,75 +212,6 @@ async def cmd_user(message: Message, command: CommandObject, db: Database) -> No
     if client_key:
         lines.append(f"Ключ клиента: <code>{escape(client_key)}</code>")
     await message.answer("\n".join(lines))
-
-
-@router.message(Command("refund"))
-async def cmd_refund(
-    message: Message, command: CommandObject, bot: Bot, db: Database, settings: Settings
-) -> None:
-    charge_id = (command.args or "").strip()
-    if not charge_id:
-        await message.answer(
-            "Формат: <code>/refund charge_id</code> (есть в уведомлении об оплате)"
-        )
-        return
-    payment = await db.get_payment(charge_id)
-    if payment is None:
-        await message.answer("❌ Платёж не найден")
-        return
-    if payment.refunded:
-        await message.answer("Этот платёж уже возвращён")
-        return
-    is_crypto = charge_id.startswith(CRYPTO_PREFIX)
-    if not is_crypto:
-        try:
-            await bot.refund_star_payment(
-                user_id=payment.user_id, telegram_payment_charge_id=charge_id
-            )
-        except TelegramBadRequest as e:
-            # Прошлая попытка вернула Stars, но ответ Telegram до нас не дошёл:
-            # деньги уже у клиента, осталось закрыть подписку
-            if "CHARGE_ALREADY_REFUNDED" not in e.message:
-                await message.answer(f"❌ Telegram отказал в возврате: {escape(e.message)}")
-                return
-        except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter) as e:
-            await message.answer(
-                f"⚠️ Telegram не ответил ({escape(e.message)}). Stars могли уже вернуться — "
-                f"повторите <code>/refund {escape(charge_id)}</code>, дважды они не спишутся."
-            )
-            return
-    refund = await db.refund(charge_id, settings.subscription_days)
-    if refund is None:  # тот же /refund, отправленный параллельно, успел раньше
-        await message.answer("Этот платёж уже возвращён")
-        return
-    # тариф могли убрать из каталога: возврат уже записан, ответ админу не должен падать
-    tariff = TARIFFS.get(payment.tariff)
-    if not is_crypto:
-        amount = f"⭐ {payment.stars}"
-    else:
-        amount = f"${tariff.price_usd}" if tariff else f"оплату тарифа {payment.tariff}"
-    if refund.adjusted:
-        days_note = "дни списаны."
-    else:
-        days_note = (
-            "дни НЕ списаны: этот платёж, похоже, оплатил уже прошедший период (после него "
-            "был перерыв или смена тарифа). Проверьте подписку: "
-            f"<code>/user {payment.user_id}</code>"
-        )
-    await message.answer(
-        f"✅ Возврат {amount} пользователю {payment.user_id} оформлен, {days_note}"
-        + ("\n⚠️ Крипту верните вручную через @CryptoBot." if is_crypto else "")
-    )
-    await safe_send(
-        bot,
-        payment.user_id,
-        f"↩️ Платёж возвращён: {amount}."
-        + (" Подписка скорректирована." if refund.adjusted else ""),
-    )
-    if refund.revoked_key:
-        await notify_admins(
-            bot, settings, revoke_notice(payment.user_id, refund.revoked_key, "возврат")
-        )
 
 
 @router.message(Command("revoke_list"))

@@ -31,7 +31,7 @@ async def check_subscriptions(bot: Bot, db: Database, settings: Settings) -> Non
         if key:
             await notify_admins(bot, settings, revoke_notice(sub.user_id, key, "подписка истекла"))
 
-    # Ключи, вернувшиеся в пул (окончание подписки, смена тарифа, возврат), сразу получают
+    # Ключи, вернувшиеся в пул (окончание подписки, смена тарифа), сразу получают
     # те, кто оплатил при пустом пуле
     for code, tariff in TARIFFS.items():
         delivered = await deliver_waiting(bot, db, settings, code)
