@@ -82,7 +82,7 @@ systemctl enable caddy
 # reload не обрывает идущие потоки ответов. Но caddy reload стучится в админку по адресу
 # из нового конфига: пока работающий Caddy слушает прежний адрес (первая установка, переезд
 # админки на сокет) или Caddy не запущен, reload не пройдёт — тогда перезапуск
-systemctl reload caddy || systemctl restart caddy
+systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
 echo "==> Настройки бота"
 cd "$APP_DIR"
