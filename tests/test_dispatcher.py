@@ -1,14 +1,15 @@
-"""Апдейты через настоящий Dispatcher (те же middleware и роутеры, что в __main__.py)
-и фейковую сессию Bot API без сети."""
+"""Апдейты через настоящий Dispatcher (собран build_dispatcher из __main__.py: те же
+middleware и роутеры) и фейковую сессию Bot API без сети."""
 
 import itertools
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
-from aiogram.enums import ChatType, ParseMode
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
@@ -24,12 +25,13 @@ from aiogram.types import (
     User,
 )
 
+import bot.ratelimit as ratelimit
+from bot.__main__ import build_dispatcher
+from bot.catalog import TARIFFS
 from bot.config import Settings
 from bot.db import Database, utcnow
-from bot.handlers import get_routers
 from bot.keyboards.inline import BuyTariff, CryptoCheck, Menu, RotateKey, SupportWrite
-from bot.middlewares.logging import LoggingMiddleware
-from bot.middlewares.user import UserMiddleware
+from bot.middlewares.throttle import BURST, ThrottleMiddleware
 from bot.services.crypto import CryptoPayments
 
 BOT_USER = User(id=4242, is_bot=True, first_name="shop", username="shopbot")
@@ -82,12 +84,7 @@ def dispatcher() -> Dispatcher:
     # роутеры модульные: подключить их можно только к одному Dispatcher
     global _dispatcher
     if _dispatcher is None:
-        dp = Dispatcher()
-        dp.update.outer_middleware(LoggingMiddleware())
-        dp.update.outer_middleware(UserMiddleware())
-        dp.message.filter(F.chat.type == ChatType.PRIVATE)
-        dp.include_routers(*get_routers())
-        _dispatcher = dp
+        _dispatcher = build_dispatcher()
     return _dispatcher
 
 
@@ -129,7 +126,15 @@ def callback_update(data: str, uid: int = 42) -> Update:
 def tg():
     # Dispatcher общий на все тесты: состояние «пишет в поддержку» не должно переходить
     # из теста в тест
-    dispatcher().fsm.storage = MemoryStorage()
+    dp = dispatcher()
+    dp.fsm.storage = MemoryStorage()
+    # и счётчик частоты тоже: пользователь 42 есть почти в каждом тесте
+    for observer in (dp.message, dp.callback_query):
+        for middleware in observer.outer_middleware:
+            if isinstance(middleware, ThrottleMiddleware):
+                middleware.limiter = ratelimit.RateLimiter(
+                    middleware.limiter.rate, middleware.limiter.burst
+                )
     session = FakeSession()
     bot = Bot(
         token="4242:TEST",
@@ -562,3 +567,40 @@ async def test_fallback_menu_for_legacy_tariff(tg, db):
     await feed(bot, message_update("что-то"), db)
     labels = [b.text for row in sent_to(session, 42)[-1].reply_markup.inline_keyboard for b in row]
     assert "Сменить тариф" in labels
+
+
+def freeze_clock(monkeypatch) -> None:
+    """Время для лимита частоты стоит: сколько апдейтов пройдёт, не зависит от скорости машины."""
+    monkeypatch.setattr(ratelimit, "time", SimpleNamespace(monotonic=lambda: 1000.0))
+
+
+async def test_button_flood_is_throttled(tg, db, monkeypatch):
+    """Скрипт жал кнопку без остановки, и каждое нажатие шло в обработчик: база, Crypto Pay
+    и Telegram API работали на флудера за счёт остальных клиентов."""
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    for _ in range(BURST + 5):
+        await feed(bot, callback_update(Menu(section="faq").pack()), db)
+    assert len(session.named("EditMessageText")) == BURST
+    # на лишние нажатия бот ничего не делает, но «часики» на кнопке гасит
+    assert len(session.named("AnswerCallbackQuery")) == BURST + 5
+
+
+async def test_payment_is_not_throttled(tg, db, monkeypatch):
+    """Оплата приходит одним апдейтом, второй раз Telegram её не пришлёт: лимит частоты
+    не должен её отбросить, даже если клиент только что исчерпал его сообщениями."""
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    for _ in range(BURST + 1):
+        await feed(bot, message_update("привет"), db)
+    assert len(sent_to(session, 42)) == BURST  # последнее сообщение отброшено
+    payment = SuccessfulPayment(
+        currency="XTR",
+        total_amount=TARIFFS["pro"].stars(settings().stars_per_usd),
+        invoice_payload="tariff:pro",
+        telegram_payment_charge_id="ch-flood",
+        provider_payment_charge_id="",
+    )
+    await feed(bot, message_update(successful_payment=payment), db)
+    assert (await db.get_subscription(42)).tariff == "pro"
+    assert any("ch-flood" in m.text for m in sent_to(session, 1000))

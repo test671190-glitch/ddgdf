@@ -7,6 +7,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import bot.services.crypto as crypto_service
 from bot.catalog import TOTAL_MODELS
 from bot.config import Settings
 from bot.db import Database, utcnow
@@ -165,7 +166,9 @@ async def test_parallel_logins_in_one_browser(env):
     assert (await resp.json())["status"] == "confirmed"
 
 
-async def test_crypto_payment_activates_subscription(env):
+async def test_crypto_payment_activates_subscription(env, monkeypatch):
+    # статус проверяется сразу после оплаты: пауза между запросами к Crypto Pay здесь мешает
+    monkeypatch.setattr(crypto_service, "CHECK_INTERVAL", 0)
     client, db, bot, crypto_client = env
     await db.add_keys("pro", ["k-pro"])
     await login(client, db, 42)

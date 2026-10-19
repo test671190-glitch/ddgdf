@@ -20,6 +20,7 @@ from bot.db import Database
 from bot.gateway import Gateway
 from bot.handlers import get_routers
 from bot.middlewares.logging import LoggingMiddleware
+from bot.middlewares.throttle import ThrottleMiddleware
 from bot.middlewares.user import UserMiddleware
 from bot.services.crypto import CryptoPayments, crypto_loop
 from bot.services.cryptopay import CryptoPayClient
@@ -39,6 +40,21 @@ COMMANDS = [
     BotCommand(command="paysupport", description="Помощь с оплатой"),
     BotCommand(command="terms", description="Условия"),
 ]
+
+
+def build_dispatcher(**data) -> Dispatcher:
+    """Middleware и роутеры бота. Тесты собирают Dispatcher этой же функцией."""
+    dp = Dispatcher(**data)
+    dp.update.outer_middleware(LoggingMiddleware())
+    dp.update.outer_middleware(UserMiddleware())
+    # Один экземпляр на сообщения и кнопки: лимит у пользователя общий, а не по отдельности
+    throttle = ThrottleMiddleware()
+    dp.message.outer_middleware(throttle)
+    dp.callback_query.outer_middleware(throttle)
+    # Бот работает только в личке: в группах он не должен отвечать на каждое сообщение
+    dp.message.filter(F.chat.type == ChatType.PRIVATE)
+    dp.include_routers(*get_routers())
+    return dp
 
 
 async def main() -> None:
@@ -65,12 +81,7 @@ async def main() -> None:
     )
     crypto = CryptoPayments(crypto_client, db, bot, settings) if crypto_client else None
 
-    dp = Dispatcher(settings=settings, db=db, crypto=crypto)
-    dp.update.outer_middleware(LoggingMiddleware())
-    dp.update.outer_middleware(UserMiddleware())
-    # Бот работает только в личке: в группах он не должен отвечать на каждое сообщение
-    dp.message.filter(F.chat.type == ChatType.PRIVATE)
-    dp.include_routers(*get_routers())
+    dp = build_dispatcher(settings=settings, db=db, crypto=crypto)
 
     tasks: list[asyncio.Task] = []
     runners: list[web.AppRunner] = []
