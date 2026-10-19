@@ -56,7 +56,8 @@ async def render_profile(
 async def render_main(user: User, db: Database) -> tuple[str, InlineKeyboardMarkup]:
     sub = await db.get_subscription(user.id)
     has_sub = sub is not None and sub.is_active
-    return texts.welcome(user.first_name, sub), main_menu(has_sub)
+    renewable = sub is None or sub.tariff in TARIFFS_ON_SALE
+    return texts.welcome(user.first_name, sub), main_menu(has_sub, renewable)
 
 
 # --- главное меню ---
@@ -161,8 +162,13 @@ async def cb_rotate_key(
         return
     # кнопку можно подделать или нажать старую: перевыпуск только при действующем доступе
     sub = await db.get_subscription(callback.from_user.id)
-    if sub is None or not sub.is_active or await db.get_active_key(callback.from_user.id) is None:
+    if sub is None or not sub.is_active:
         await safe_answer(callback, "Перевыпуск доступен при активной подписке", show_alert=True)
+        return
+    if await db.get_active_key(callback.from_user.id) is None:
+        await safe_answer(
+            callback, "Ключ ещё готовим — перевыпуск будет доступен после выдачи", show_alert=True
+        )
         return
     if not callback_data.confirm:
         await show(callback, texts.rotate_confirm(), rotate_keyboard())

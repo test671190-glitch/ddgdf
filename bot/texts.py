@@ -30,6 +30,24 @@ def tariff_name(code: str) -> str:
     return tariff.title if tariff else code
 
 
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """«1 день», «3 дня», «30 дней», «11 дней»."""
+    rest = abs(n) % 100
+    if 11 <= rest <= 14:
+        word = many
+    elif rest % 10 == 1:
+        word = one
+    elif 2 <= rest % 10 <= 4:
+        word = few
+    else:
+        word = many
+    return f"{n} {word}"
+
+
+def days(n: int) -> str:
+    return plural(n, "день", "дня", "дней")
+
+
 def days_left(sub: Subscription) -> int:
     # Вверх: сразу после покупки 30 дней — это 30, а не 29; в последние сутки — 1, а не 0
     return max(0, -(-(sub.expires_at - utcnow()) // timedelta(days=1)))
@@ -46,6 +64,11 @@ def welcome(first_name: str | None, sub: Subscription | None) -> str:
         status = (
             f"Ваш тариф: <b>{tariff_name(sub.tariff)}</b> до {fmt_dt(sub.expires_at)}, "
             f"осталось {days_left(sub)} дн."
+        )
+    elif sub:
+        status = (
+            f"Подписка закончилась {fmt_dt(sub.expires_at)}. "
+            "Выберите тариф, и доступ вернётся сразу после оплаты."
         )
     else:
         status = "Подписки пока нет. Выберите тариф, ключ придёт сразу после оплаты."
@@ -79,7 +102,7 @@ HELP = (
 def tariffs_overview(settings: Settings) -> str:
     lines = [
         f"<b>Тарифы {SHOP_NAME}</b>",
-        f"Подписка на {settings.subscription_days} дней. В каждом тарифе все {TOTAL_MODELS} "
+        f"Подписка на {days(settings.subscription_days)}. В каждом тарифе все {TOTAL_MODELS} "
         "моделей, отличаются только лимиты.",
     ]
     for t in TARIFFS_ON_SALE.values():
@@ -100,11 +123,11 @@ def tariff_details(tariff: Tariff, settings: Settings, current: Subscription | N
         lines.append(f"<i>{escape(tariff.tagline)}</i>")
     lines += [
         "",
-        f"<b>${tariff.price_usd}</b> за {settings.subscription_days} дней · {stars} Stars",
+        f"<b>${tariff.price_usd}</b> за {days(settings.subscription_days)} · {stars} Stars",
         "",
         "<blockquote>" + "\n".join(f"• {escape(f)}" for f in tariff.features) + "</blockquote>",
         "",
-        f"{len(TEXT_MODELS)} текстовых моделей, {len(IMAGE_MODELS)} для изображений, "
+        f"Модели: {len(TEXT_MODELS)} для текста, {len(IMAGE_MODELS)} для изображений, "
         f"{len(VIDEO_MODELS)} для видео.",
     ]
     if current and current.is_active:
@@ -112,7 +135,7 @@ def tariff_details(tariff: Tariff, settings: Settings, current: Subscription | N
         if current.tariff == tariff.code:
             lines.append(
                 f"Подписка активна до {fmt_dt(current.expires_at)}. "
-                f"Оплата добавит ещё {settings.subscription_days} дней."
+                f"Оплата добавит ещё {days(settings.subscription_days)}."
             )
         else:
             lines.append(
@@ -124,7 +147,7 @@ def tariff_details(tariff: Tariff, settings: Settings, current: Subscription | N
 
 
 def invoice_description(tariff: Tariff, settings: Settings) -> str:
-    text = f"Доступ на {settings.subscription_days} дней: " + "; ".join(tariff.features)
+    text = f"Доступ на {days(settings.subscription_days)}: " + "; ".join(tariff.features)
     return text[:255]
 
 
@@ -166,8 +189,16 @@ def key_block(key: str, settings: Settings) -> list[str]:
 
 
 def activation(
-    tariff: Tariff, act: Activation, settings: Settings, *, paid: bool, key: str | None
+    tariff: Tariff,
+    act: Activation,
+    settings: Settings,
+    *,
+    paid: bool,
+    key: str | None,
+    previous_key: str | None = None,
 ) -> str:
+    """previous_key — ключ прежнего тарифа, который продолжает работать, пока для нового
+    тарифа нет свободного ключа (смена тарифа при пустом пуле)."""
     head = "🎉 <b>Оплата прошла!</b>" if paid else "<b>Вам выдан доступ</b>"
     verb = "продлён" if act.extended else "активен"
     lines = [
@@ -178,6 +209,13 @@ def activation(
     if key:
         lines += key_block(key, settings)
         lines += ["", "Как подключить к IDE и скриптам — в разделе «Подключение»."]
+    elif previous_key:
+        lines += key_block(previous_key, settings)
+        lines += [
+            "",
+            f"Доступ уже работает. Лимиты тарифа {tariff.title} включим в ближайшее время — "
+            "пришлём сюда сообщение.",
+        ]
     else:
         lines.append("API-ключ готовим — пришлём его сюда в ближайшее время.")
     return "\n".join(lines)
@@ -261,11 +299,12 @@ def api_info(settings: Settings) -> str:
         f"OpenAI: <code>{base}</code>\n"
         f"Anthropic: <code>{anthropic}</code>"
         "</blockquote>\n"
-        "Ключ — в заголовке <code>Authorization: Bearer KEY</code> или <code>x-api-key</code>.\n\n"
+        "Ключ — в заголовке <code>Authorization: Bearer ВАШ_КЛЮЧ</code> или "
+        "<code>x-api-key</code>. Ключ — в «Профиле».\n\n"
         "<b>Пример запроса</b>\n"
         '<pre><code class="language-bash">'
         f"curl {base}/chat/completions \\\n"
-        '  -H "Authorization: Bearer $UNKNOWN_SHOP_API_KEY" \\\n'
+        '  -H "Authorization: Bearer ВАШ_КЛЮЧ" \\\n'
         '  -H "Content-Type: application/json" \\\n'
         '  -d \'{"model": "claude-opus-5-5", '
         '"messages": [{"role": "user", "content": "Привет!"}]}\''
@@ -361,8 +400,9 @@ def site(settings: Settings) -> str:
 def terms(settings: Settings) -> str:
     return (
         f"<b>Условия {SHOP_NAME}</b>\n\n"
-        f"1. Подписка даёт доступ к API на {settings.subscription_days} дней с момента оплаты "
-        "и не продлевается автоматически.\n"
+        f"1. Каждая оплата даёт доступ к API на {days(settings.subscription_days)}: при "
+        "продлении того же тарифа дни добавляются к текущему сроку, при смене тарифа остаток "
+        "прежнего не переносится. Подписка не продлевается автоматически.\n"
         "2. Оплата принимается в Telegram Stars или криптовалютой через @CryptoBot. "
         "После оплаты бот выдаёт API-ключ.\n"
         "3. Ключ личный, его нельзя публиковать и передавать третьим лицам.\n"
@@ -371,10 +411,15 @@ def terms(settings: Settings) -> str:
 
 
 def reminder(sub: Subscription) -> str:
-    return (
-        f"Подписка <b>{tariff_name(sub.tariff)}</b> закончится {fmt_dt(sub.expires_at)}.\n"
-        "Продлите заранее, чтобы ключ продолжил работать без перерыва."
-    )
+    head = f"Подписка <b>{tariff_name(sub.tariff)}</b> закончится {fmt_dt(sub.expires_at)}.\n"
+    if sub.tariff not in TARIFFS_ON_SALE:
+        # Продлить снятый с продажи тариф нельзя, а смена тарифа сжигает остаток дней:
+        # совет «продлите заранее» стоил бы клиенту оплаченного времени
+        return (
+            head + "Этот тариф больше не продаётся. Выберите новый, когда подписка закончится: "
+            "при смене тарифа оставшиеся дни не переносятся."
+        )
+    return head + "Продлите заранее, чтобы ключ продолжил работать без перерыва."
 
 
 def expired(sub: Subscription) -> str:

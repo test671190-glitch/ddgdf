@@ -667,9 +667,13 @@ class Database:
 
     # --- статистика ---
 
-    async def stats(self) -> dict:
+    async def stats(self, exclude_users: list[int] | tuple[int, ...] = ()) -> dict:
+        """exclude_users — кого не считать клиентами (админы тоже пишут боту)."""
         now = _iso(utcnow())
-        users = await self._one("SELECT COUNT(*) AS n FROM users")
+        marks = ",".join("?" * len(exclude_users))
+        users = await self._one(
+            f"SELECT COUNT(*) AS n FROM users WHERE id NOT IN ({marks})", tuple(exclude_users)
+        )
         active = await self._all(
             "SELECT tariff, COUNT(*) AS n FROM subscriptions WHERE expires_at > ? GROUP BY tariff",
             (now,),

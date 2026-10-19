@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRY_AFTER = 60  # дольше не ждём: обработчик и рассылка не должны висеть минутами
 NETWORK_RETRY_DELAY = 3
+# Уведомления, которые должны остаться в истории чата: квитанция об оплате с ключом, выдача
+# ключа, ответ поддержки. Кнопка под ними открывает раздел новым сообщением, а не вместо них
+KEEP_IN_CHAT = (
+    "🎉 Оплата прошла!",
+    "Вам выдан доступ",
+    "Ваш API-ключ для тарифа",
+    "Ответ поддержки",
+)
 
 
 def fmt_dt(dt: datetime) -> str:
@@ -32,7 +40,11 @@ async def show(
     message = callback.message
     sent = False
     try:
-        if isinstance(message, Message) and message.text is not None:
+        if (
+            isinstance(message, Message)
+            and message.text is not None
+            and not message.text.startswith(KEEP_IN_CHAT)
+        ):
             try:
                 await message.edit_text(text, reply_markup=markup)
                 sent = True

@@ -2,7 +2,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CopyTextButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.catalog import FAQ, MODEL_CATEGORIES, TARIFFS_ON_SALE, Tariff
+from bot.catalog import FAQ, FAQ_BUTTONS, MODEL_CATEGORIES, TARIFFS_ON_SALE, Tariff
 
 # Цвета кнопок Telegram: primary — синяя, success — зелёная, danger — красная
 PRIMARY = "primary"
@@ -72,13 +72,14 @@ def web_login_keyboard(token: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def main_menu(has_subscription: bool = False) -> InlineKeyboardMarkup:
+def main_menu(has_subscription: bool = False, renewable: bool = True) -> InlineKeyboardMarkup:
+    """renewable=False — тариф клиента снят с продажи: продлить его нельзя, только сменить."""
+    if has_subscription:
+        label = "Продлить подписку" if renewable else "Сменить тариф"
+    else:
+        label = "Купить подписку"
     builder = InlineKeyboardBuilder()
-    builder.button(
-        text="Продлить подписку" if has_subscription else "Купить подписку",
-        callback_data=Menu(section="tariffs"),
-        style=PRIMARY,
-    )
+    builder.button(text=label, callback_data=Menu(section="tariffs"), style=PRIMARY)
     builder.button(text="Профиль", callback_data=Menu(section="profile"))
     builder.button(text="Подключение", callback_data=Menu(section="api"))
     builder.button(text="Модели", callback_data=Menu(section="models"))
@@ -136,6 +137,16 @@ def crypto_pay_keyboard(tariff: Tariff, order_id: int, pay_url: str) -> InlineKe
     return builder.as_markup()
 
 
+def crypto_expired_keyboard(tariff_code: str) -> InlineKeyboardMarkup:
+    """Счёт истёк, клиент ещё ничего не купил: предлагаем новый счёт, а не «Продлить»."""
+    builder = InlineKeyboardBuilder()
+    if tariff_code in TARIFFS_ON_SALE:
+        builder.button(text="Новый счёт", callback_data=CryptoPay(code=tariff_code), style=PRIMARY)
+    builder.button(text="← Тарифы", callback_data=Menu(section="tariffs"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def renew_keyboard(tariff_code: str | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if tariff_code in TARIFFS_ON_SALE:
@@ -186,7 +197,7 @@ def models_list_keyboard(current: str) -> InlineKeyboardMarkup:
 def faq_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for i, (question, _) in enumerate(FAQ):
-        builder.button(text=question, callback_data=FaqItem(index=i))
+        builder.button(text=FAQ_BUTTONS.get(question, question), callback_data=FaqItem(index=i))
     builder.button(text=BACK, callback_data=Menu(section="main"))
     builder.adjust(1)
     return builder.as_markup()

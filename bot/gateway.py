@@ -18,7 +18,7 @@ import aiohttp
 from aiohttp import web
 from yarl import URL
 
-from bot.catalog import SHOP_NAME
+from bot.catalog import MAX_CONCURRENT_REQUESTS, SHOP_NAME
 from bot.config import Settings
 from bot.db import CLIENT_KEY_PREFIX, Database
 
@@ -37,7 +37,7 @@ UPSTREAM_CONNECTIONS = 400
 UPSTREAM_SLOT_WAIT = 60  # сколько ждать свободного соединения, прежде чем ответить 502
 # Одновременных запросов на одного клиента: агентам в IDE хватает с запасом, а один ключ
 # не может занять все соединения (UPSTREAM_CONNECTIONS) и оставить без ответа остальных
-MAX_CONCURRENT_PER_CLIENT = 20
+MAX_CONCURRENT_PER_CLIENT = MAX_CONCURRENT_REQUESTS
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 MAX_REDIRECTS = 5
 PROVIDER_AUTH_HEADERS = ("Authorization", "x-api-key")

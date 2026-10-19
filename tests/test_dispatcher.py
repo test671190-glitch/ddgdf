@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
 from aiogram.enums import ChatType, ParseMode
-from aiogram.exceptions import TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
@@ -26,7 +26,7 @@ from aiogram.types import (
 from bot.config import Settings
 from bot.db import Database, utcnow
 from bot.handlers import get_routers
-from bot.keyboards.inline import CryptoCheck, Menu, RotateKey, SupportWrite
+from bot.keyboards.inline import BuyTariff, CryptoCheck, Menu, RotateKey, SupportWrite
 from bot.middlewares.logging import LoggingMiddleware
 from bot.middlewares.user import UserMiddleware
 from bot.services.crypto import CryptoPayments
@@ -344,3 +344,95 @@ async def test_site_section_links_to_site_and_docs(tg, db):
     assert "unknown-shop.netlify.app" in edit.text
     urls = [b.url for row in edit.reply_markup.inline_keyboard for b in row if b.url]
     assert urls == ["https://unknown-shop.netlify.app", "https://unknown-shop.netlify.app/api.html"]
+
+
+async def test_grant_of_other_tariff_needs_force(tg, db):
+    """/grant 42 pro 3 клиенту с оплаченным Unlimited молча сжигал ему остаток дней."""
+    bot, session = tg
+    await db.grant(42, "unlimited", 60)
+    before = (await db.get_subscription(42)).expires_at
+    await feed(bot, message_update("/grant 42 pro 3", uid=1000), db)
+    (warning,) = sent_to(session, 1000)
+    assert "сожжёт остаток" in warning.text and "force" in warning.text
+    sub = await db.get_subscription(42)
+    assert sub.tariff == "unlimited" and sub.expires_at == before
+
+    session.calls.clear()
+    await feed(bot, message_update("/grant 42 pro 3 force", uid=1000), db)
+    assert (await db.get_subscription(42)).tariff == "pro"
+
+
+async def test_grant_warns_about_unknown_user(tg, db):
+    bot, session = tg
+    await feed(bot, message_update("/grant 555 pro", uid=1000), db)
+    assert "нет в базе" in sent_to(session, 1000)[-1].text
+
+
+async def test_button_under_payment_receipt_keeps_receipt(tg, db):
+    """«Как подключить» под сообщением «Оплата прошла!» заменяло собой квитанцию с ключом."""
+    bot, session = tg
+    receipt = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=42, type="private"),
+        from_user=BOT_USER,
+        text="🎉 Оплата прошла!\nТариф Pro активен до ...",
+    )
+    query = CallbackQuery(
+        id="q",
+        from_user=user(42),
+        chat_instance="ci",
+        data=Menu(section="api").pack(),
+        message=receipt,
+    )
+    await feed(bot, Update(update_id=next(_ids), callback_query=query), db)
+    assert session.named("EditMessageText") == []
+    assert "Подключение" in session.named("SendMessage")[0].text
+
+
+async def test_expired_subscription_is_not_called_absent(tg, db):
+    bot, session = tg
+    await db.grant(42, "pro", 1)
+    await db.conn.execute("UPDATE subscriptions SET expires_at='2026-01-01T00:00:00+00:00'")
+    await db.conn.commit()
+    await feed(bot, message_update("/start"), db)
+    assert "Подписка закончилась" in session.named("SendMessage")[0].text
+
+
+async def test_legacy_tariff_is_not_offered_renewal(tg, db):
+    """Клиенту снятого с продажи тарифа предлагали «продлить заранее» — и он терял дни."""
+    bot, session = tg
+    await db.grant(42, "start", 30)
+    await feed(bot, message_update("/start"), db)
+    labels = [
+        b.text for row in session.named("SendMessage")[0].reply_markup.inline_keyboard for b in row
+    ]
+    assert "Сменить тариф" in labels and "Продлить подписку" not in labels
+
+
+async def test_stars_invoice_failure_answers_button(tg, db):
+    bot, session = tg
+
+    def reject(method) -> None:
+        if type(method).__name__ == "SendInvoice":
+            raise TelegramBadRequest(method=method, message="Bad Request: CURRENCY_INVALID")
+
+    session.hooks.append(reject)
+    await feed(bot, callback_update(BuyTariff(code="pro").pack()), db)
+    (answer,) = session.named("AnswerCallbackQuery")
+    assert "Не получилось выставить счёт" in answer.text
+
+
+async def test_expired_crypto_invoice_offers_new_invoice(tg):
+    bot, session = tg
+    database = Database(":memory:")
+    await database.connect()
+    order = await database.create_crypto_order(42, "pro")
+    await database.set_crypto_invoice(order.id, 1, "https://t.me/pay", utcnow())
+    await database.expire_crypto_order(order.id)
+    crypto = CryptoPayments(None, database, bot, settings())
+    await feed(bot, callback_update(CryptoCheck(order_id=order.id).pack()), database, None, crypto)
+    (edit,) = session.named("EditMessageText")
+    labels = [b.text for row in edit.reply_markup.inline_keyboard for b in row]
+    assert labels[0] == "Новый счёт" and "Продлить" not in labels
+    await database.close()

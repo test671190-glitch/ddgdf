@@ -111,3 +111,43 @@ def test_progress_bar():
     assert texts.progress_bar(15, 30) == "▰▰▰▰▰▱▱▱▱▱"
     assert texts.progress_bar(40, 30) == "▰" * 10
     assert texts.progress_bar(0, 30) == "▱" * 10
+
+
+def test_plural_days():
+    assert [texts.days(n) for n in (1, 2, 5, 11, 21, 22, 30, 31, 112)] == [
+        "1 день",
+        "2 дня",
+        "5 дней",
+        "11 дней",
+        "21 день",
+        "22 дня",
+        "30 дней",
+        "31 день",
+        "112 дней",
+    ]
+
+
+def test_notification_heads_are_kept_in_chat(settings):
+    """Кнопки под этими сообщениями не должны их стирать (utils.KEEP_IN_CHAT)."""
+    import re
+
+    from bot.utils import KEEP_IN_CHAT
+
+    sub = Subscription(1, "pro", utcnow() + timedelta(days=12))
+    act = Activation("pro", sub.expires_at, "k", None, False)
+    plain = [
+        re.sub(r"<[^>]+>", "", t)
+        for t in (
+            texts.activation(TARIFFS["pro"], act, settings, paid=True, key="k"),
+            texts.activation(TARIFFS["pro"], act, settings, paid=False, key="k"),
+            texts.key_issued("Pro", "k", settings),
+            texts.support_answer("ok"),
+        )
+    ]
+    assert all(t.startswith(KEEP_IN_CHAT) for t in plain)
+
+
+def test_legacy_tariff_reminder_does_not_say_renew():
+    sub = Subscription(1, "start", utcnow() + timedelta(days=2))
+    assert "Продлите заранее" not in texts.reminder(sub)
+    assert "больше не продаётся" in texts.reminder(sub)

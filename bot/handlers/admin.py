@@ -29,7 +29,8 @@ ADMIN_HELP = (
     "/keys — остаток ключей в пуле\n"
     f"/addkeys <i>тариф</i> — добавить ключи (каждый с новой строки). Тарифы: {TARIFF_CODES}\n"
     "/givekey <i>user_id</i> <i>ключ</i> — выдать ключ вручную\n"
-    "/grant <i>user_id</i> <i>тариф</i> [<i>дней</i>] — начислить подписку без оплаты\n"
+    "/grant <i>user_id</i> <i>тариф</i> [<i>дней</i>] — начислить подписку без оплаты "
+    "(другой тариф поверх действующего — только с <i>force</i> в конце)\n"
     "/user <i>user_id</i> — информация о пользователе\n"
     "/revoke_list — ключи, которые надо деактивировать в панели провайдера\n"
     "/revoked <i>ключ</i> — отметить ключ деактивированным"
@@ -42,8 +43,8 @@ async def cmd_admin(message: Message) -> None:
 
 
 @router.message(Command("stats"))
-async def cmd_stats(message: Message, db: Database) -> None:
-    s = await db.stats()
+async def cmd_stats(message: Message, db: Database, settings: Settings) -> None:
+    s = await db.stats(exclude_users=settings.admin_ids)
     active = (
         "\n".join(
             f"  {TARIFFS[c].title if c in TARIFFS else c}: {n}" for c, n in s["active"].items()
@@ -109,6 +110,10 @@ async def _delete_secret(message: Message) -> None:
         pass
 
 
+def _title(code: str) -> str:
+    return TARIFFS[code].title if code in TARIFFS else code
+
+
 def _parse_user_id(value: str) -> int | None:
     # isdecimal, а не isdigit: «²» — digit, но int() его не разбирает. Длину проверяем до int():
     # SQLite хранит не больше 64 бит, большее число роняет запрос без ответа админу
@@ -163,6 +168,9 @@ async def cmd_grant(
     message: Message, command: CommandObject, bot: Bot, db: Database, settings: Settings
 ) -> None:
     parts = (command.args or "").split()
+    force = bool(parts) and parts[-1].lower() == "force"
+    if force:
+        parts = parts[:-1]
     user_id = _parse_user_id(parts[0]) if len(parts) in (2, 3) else None
     if user_id is None or parts[1] not in TARIFFS:
         await message.answer(
@@ -178,12 +186,26 @@ async def cmd_grant(
         return
     tariff = parts[1]
     days = int(parts[2]) if len(parts) == 3 else settings.subscription_days
+    sub = await db.get_subscription(user_id)
+    if sub and sub.is_active and sub.tariff != tariff and not force:
+        # Выдача другого тарифа сжигает оплаченный остаток: например, компенсация «3 дня Pro»
+        # клиенту с 57 оплаченными днями Unlimited оставила бы ему 3 дня
+        current = TARIFFS[sub.tariff].title if sub.tariff in TARIFFS else sub.tariff
+        await message.answer(
+            f"⚠️ У клиента {current} до {fmt_dt(sub.expires_at)}. Выдача тарифа "
+            f"{TARIFFS[tariff].title} сожжёт остаток: дни прежнего тарифа не переносятся.\n\n"
+            f"Продлить текущий: <code>/grant {user_id} {sub.tariff} {days}</code>\n"
+            f"Всё равно сменить: <code>/grant {user_id} {tariff} {days} force</code>"
+        )
+        return
     act = await db.grant(user_id, tariff, days)
-    await deliver_activation(bot, db, settings, user_id, act, paid=False)
-    await message.answer(
-        f"✅ {TARIFFS[tariff].title} для <code>{user_id}</code> до {fmt_dt(act.expires_at)}"
-        + ("" if act.key else "\n⚠️ Ключ не выдан — пул пуст.")
-    )
+    delivered = await deliver_activation(bot, db, settings, user_id, act, paid=False)
+    text = f"✅ {TARIFFS[tariff].title} для <code>{user_id}</code> до {fmt_dt(act.expires_at)}"
+    if await db.get_user(user_id) is None:
+        text += "\n⚠️ Такого пользователя нет в базе — он не запускал бота. Проверьте ID."
+    elif not delivered:
+        text += "\n⚠️ Клиенту не удалось отправить сообщение (возможно, он заблокировал бота)."
+    await message.answer(text)
 
 
 @router.message(Command("user"))
@@ -204,10 +226,14 @@ async def cmd_user(message: Message, command: CommandObject, db: Database) -> No
         lines.append("В базе нет (не запускал бота)")
     if sub:
         status = "активна" if sub.is_active else "истекла"
-        lines.append(f"Подписка: {sub.tariff}, {status}, до {fmt_dt(sub.expires_at)}")
+        lines.append(f"Подписка: {_title(sub.tariff)}, {status}, до {fmt_dt(sub.expires_at)}")
     else:
         lines.append("Подписки нет")
-    lines.append(f"Ключ провайдера: <code>{escape(key.key)}</code>" if key else "Ключа нет")
+    if key:
+        # после смены тарифа при пустом пуле ключ может быть ещё от прежнего тарифа
+        lines.append(f"Ключ провайдера ({_title(key.tariff)}): <code>{escape(key.key)}</code>")
+    else:
+        lines.append("Ключа нет")
     client_key = await db.get_client_key(user_id)
     if client_key:
         lines.append(f"Ключ клиента: <code>{escape(client_key)}</code>")
