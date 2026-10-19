@@ -446,7 +446,7 @@ data: [DONE]</pre>
         <input class="search" id="model-search" type="search" placeholder="Найти: claude, kling, gemini…" autocomplete="off">
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="models">
           <thead><tr><th>ID</th><th>Модель</th><th>Разработчик</th><th>reasoning_effort</th></tr></thead>
           <tbody id="models-body"></tbody>
         </table>
@@ -583,7 +583,7 @@ data: [DONE]</pre>
     <section class="sheet glass" id="limits">
       <span class="kicker">Тарифы</span>
       <h2>Лимиты и тарифы</h2>
-      <p class="prose">Отдельного ограничения на число запросов в минуту нет. Объём работы зависит только от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
+      <p class="prose">Ограничения на число запросов в минуту нет. Одновременно на один ключ обрабатывается до 20 запросов: лишние получат ответ <code>429 too_many_concurrent_requests</code>, их можно повторить, как только придут ответы на текущие. Объём работы зависит от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
 <!-- @plans -->
       <p class="prose">Остаток по тарифу приходит в заголовках каждого ответа:</p>
       <div class="table-wrap">
@@ -690,8 +690,10 @@ data: [DONE]</pre>
         return;
       }
       body.innerHTML = rows.map(function (m) {
+        // .m-name — название под ID: на телефоне колонки «Модель» и «Разработчик» скрыты,
+        // иначе таблица уезжала вбок и названия выглядели обрезанными
         return '<tr><td><span class="type-dot" style="background:var(' + TYPE_VAR[m[2]] + ')"></span><button class="id-btn" type="button" title="Скопировать ID" data-id="' + m[0] + '">' + m[0] +
-          "</button></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
+          '</button><span class="m-name">' + m[1] + " · " + m[3] + "</span></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
       }).join("");
     }
     body.addEventListener("click", function (e) {
@@ -852,15 +854,33 @@ data: [DONE]</pre>
       }
       if (reduce.matches) draw();
     });
-    canvas.addEventListener("pointerleave", function () { hovered = null; tip.hidden = true; drag = null; });
+    canvas.addEventListener("pointerleave", function (e) {
+      drag = null;
+      // палец «уходит» сразу после касания: подсказку после тапа прячет таймер, а не это событие
+      if (e.pointerType !== "mouse") return;
+      hovered = null;
+      tip.hidden = true;
+    });
     canvas.addEventListener("pointercancel", function () { drag = null; });
     canvas.addEventListener("pointerdown", function (e) { drag = { x: e.clientX, y: e.clientY, moved: false }; canvas.setPointerCapture(e.pointerId); });
+    var tipTimer;
     canvas.addEventListener("pointerup", function (e) {
       var wasDrag = drag && drag.moved;
       drag = null;
       if (wasDrag) return;
       var p = pick(e);
-      if (p) copyText(p.m[0], null);
+      if (!p) return;
+      copyText(p.m[0], null);
+      if (e.pointerType !== "mouse") {
+        // на телефоне нет наведения: без подсказки клиент не видел, какую модель скопировал
+        hovered = p;
+        tip.hidden = false;
+        tip.innerHTML = "<b>" + p.m[1] + "</b><code>" + p.m[0] + "</code>";
+        tip.style.left = p.sx + "px";
+        tip.style.top = p.sy + "px";
+        clearTimeout(tipTimer);
+        tipTimer = setTimeout(function () { hovered = null; tip.hidden = true; }, 2200);
+      }
     });
 
     readColors();

@@ -355,7 +355,12 @@
     .stat { min-width: 0; flex: 1 1 90px; padding: 14px; }
     .stat span { letter-spacing: 0.04em; overflow-wrap: anywhere; }
     #orbit { height: 300px; }
+    table.models th:nth-child(2), table.models th:nth-child(3),
+    table.models td:nth-child(2), table.models td:nth-child(3) { display: none; }
+    table.models .m-name { display: block; margin: 4px 0 0 16px; font-size: 13px; color: var(--muted); }
+    table.models th, table.models td { padding: 10px 12px; }
   }
+  .m-name { display: none; }
 
   /* Phones. A blur under every card over a constantly re-rendered WebGL scene made the GPU
      re-blur the whole page each frame while scrolling: animations stuttered, cards flickered
