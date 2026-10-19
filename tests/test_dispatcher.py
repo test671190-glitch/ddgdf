@@ -30,7 +30,14 @@ from bot.__main__ import build_dispatcher
 from bot.catalog import TARIFFS
 from bot.config import Settings
 from bot.db import Database, utcnow
-from bot.keyboards.inline import BuyTariff, CryptoCheck, Menu, RotateKey, SupportWrite
+from bot.keyboards.inline import (
+    BuyTariff,
+    CryptoCheck,
+    Menu,
+    RotateKey,
+    SupportAnswer,
+    SupportWrite,
+)
 from bot.middlewares.throttle import BURST, ThrottleMiddleware
 from bot.services.crypto import CryptoPayments
 
@@ -56,6 +63,13 @@ class FakeSession(BaseSession):
             return True
         if name == "CopyMessage":
             return MessageId(message_id=next(_ids))
+        if name == "SendInvoice":
+            return Message(
+                message_id=next(_ids),
+                date=datetime.now(),
+                chat=Chat(id=method.chat_id, type="private"),
+                from_user=BOT_USER,
+            )
         if name in ("SendMessage", "EditMessageText"):
             return Message(
                 message_id=next(_ids),
@@ -132,9 +146,7 @@ def tg():
     for observer in (dp.message, dp.callback_query):
         for middleware in observer.outer_middleware:
             if isinstance(middleware, ThrottleMiddleware):
-                middleware.limiter = ratelimit.RateLimiter(
-                    middleware.limiter.rate, middleware.limiter.burst
-                )
+                middleware.__init__(middleware.limiter.rate, middleware.limiter.burst)
     session = FakeSession()
     bot = Bot(
         token="4242:TEST",
@@ -356,6 +368,7 @@ async def test_site_section_links_to_site_and_docs(tg, db):
 async def test_grant_of_other_tariff_needs_force(tg, db):
     """/grant 42 pro 3 клиенту с оплаченным Unlimited молча сжигал ему остаток дней."""
     bot, session = tg
+    await db.upsert_user(42, None, "Neo")
     await db.grant(42, "unlimited", 60)
     before = (await db.get_subscription(42)).expires_at
     await feed(bot, message_update("/grant 42 pro 3", uid=1000), db)
@@ -370,9 +383,17 @@ async def test_grant_of_other_tariff_needs_force(tg, db):
 
 
 async def test_grant_warns_about_unknown_user(tg, db):
+    """Опечатка в ID: раньше подписка и ключ из пула уходили несуществующему клиенту,
+    а предупреждение приходило уже после. Теперь без force ничего не начисляется."""
     bot, session = tg
+    await db.add_keys("pro", ["up-1"])
     await feed(bot, message_update("/grant 555 pro", uid=1000), db)
     assert "нет в базе" in sent_to(session, 1000)[-1].text
+    assert await db.get_subscription(555) is None
+    assert (await db.key_stats())["pro"]["free"] == 1
+
+    await feed(bot, message_update("/grant 555 pro 30 force", uid=1000), db)
+    assert (await db.get_subscription(555)).tariff == "pro"
 
 
 async def test_button_under_payment_receipt_keeps_receipt(tg, db):
@@ -544,6 +565,179 @@ async def test_client_reply_to_answer_continues_ticket(tg, db):
     )
     await feed(bot, message_update("всё равно 401", reply_to_message=answer), db)
     assert len(admin_copies(session)) == 1
+
+
+async def open_ticket(bot, db, uid: int, text: str) -> None:
+    await feed(bot, callback_update(SupportWrite().pack(), uid=uid), db)
+    await feed(bot, message_update(text, uid=uid), db)
+
+
+def press_answer(user_id: int, cancel: bool = False) -> Update:
+    """Админ жмёт «Ответить» (или «Отмена») для клиента user_id."""
+    return callback_update(SupportAnswer(user_id=user_id, cancel=cancel).pack(), uid=1000)
+
+
+def texts_to(session: FakeSession, chat_id: int) -> list[str]:
+    return [getattr(m, "text", None) or m.caption or "" for m in sent_to(session, chat_id)]
+
+
+async def test_answer_button_reaches_only_that_client(tg, db):
+    """Писали двое клиентов. Ответ админа уходил «на удачу»: у админа не было ни кнопки
+    «Ответить», ни имени получателя, а голый текст без реплая никуда не адресован. Теперь
+    «Ответить» под обращением — и следующее сообщение получает только этот клиент."""
+    bot, session = tg
+    await open_ticket(bot, db, 42, "не работает ключ")
+    await open_ticket(bot, db, 43, "вопрос по оплате")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    prompt = texts_to(session, 1000)[-1]
+    assert "Ответ клиенту" in prompt and "<code>42</code>" in prompt
+    await feed(bot, message_update("ключ перевыпущен", uid=1000), db)
+    assert texts_to(session, 42) == ["Ответ поддержки\n\nключ перевыпущен"]
+    assert sent_to(session, 43) == []
+    confirmation = texts_to(session, 1000)[-1]
+    assert "отправлен клиенту" in confirmation and "<code>42</code>" in confirmation
+
+    # режим закрыт: следующий текст админа никому не уходит, и админ это видит
+    await feed(bot, message_update("а это для второго", uid=1000), db)
+    assert len(sent_to(session, 42)) == 1 and sent_to(session, 43) == []
+    assert "никуда не отправлено" in texts_to(session, 1000)[-1]
+
+
+async def test_ticket_messages_name_the_client_on_button(tg, db):
+    """Дописки разных клиентов приходят вперемешку: под каждой копией видно, от кого она."""
+    bot, session = tg
+    await open_ticket(bot, db, 42, "первое")
+    await feed(bot, message_update("дописка", uid=42), db)
+    # карточка советовала ответить «на это или следующее сообщение», а следующим при двух
+    # клиентах оказывалась карточка другого — ответ уходил ему
+    assert "следующее" not in sent_to(session, 1000)[0].text
+    for m in sent_to(session, 1000)[:3]:  # карточка и две копии
+        (button,) = [b for row in m.reply_markup.inline_keyboard for b in row]
+        assert "Neo · 42" in button.text
+        assert SupportAnswer.unpack(button.callback_data).user_id == 42
+
+
+async def test_answer_album_goes_to_one_client(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "скриншоты не грузятся")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    for i in range(3):
+        caption = "вот так" if i == 0 else None
+        await feed(
+            bot, message_update(uid=1000, photo=photo, media_group_id="a1", caption=caption), db
+        )
+    copies = sent_to(session, 42)
+    assert len(copies) == 3 and copies[0].caption == "Ответ поддержки\n\nвот так"
+    assert sum("отправлен клиенту" in t for t in texts_to(session, 1000)) == 1
+    await feed(bot, message_update("и ещё", uid=1000), db)  # после альбома режим закрыт
+    assert len(sent_to(session, 42)) == 3
+
+
+async def test_latest_answer_button_wins(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "раз")
+    await open_ticket(bot, db, 43, "два")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    await feed(bot, press_answer(43), db)
+    await feed(bot, message_update("ответ второму", uid=1000), db)
+    assert sent_to(session, 42) == [] and len(sent_to(session, 43)) == 1
+
+
+async def test_command_or_cancel_leaves_answer_mode(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "вопрос")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    await feed(bot, message_update("/stats", uid=1000), db)
+    await feed(bot, message_update("набрал не туда", uid=1000), db)
+    await feed(bot, press_answer(42), db)
+    await feed(bot, press_answer(42, cancel=True), db)
+    await feed(bot, message_update("и это не туда", uid=1000), db)
+    assert sent_to(session, 42) == []
+
+
+async def test_forged_answer_button_from_client_does_nothing(tg, db):
+    """Клиент подделал кнопку «Ответить» другому клиенту: его текст не должен уйти тому."""
+    bot, session = tg
+    await feed(bot, callback_update(SupportAnswer(user_id=43).pack(), uid=42), db)
+    await feed(bot, message_update("привет от 42", uid=42), db)
+    assert sent_to(session, 43) == []
+
+
+async def test_reply_answer_names_the_client(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "вопрос")
+    await open_ticket(bot, db, 43, "другой вопрос")
+    rows = await db._all("SELECT message_id, user_id FROM support_messages ORDER BY message_id")
+    copy43 = [r["message_id"] for r in rows if r["user_id"] == 43][-1]
+    await feed(bot, press_answer(42), db)  # реплай важнее нажатой раньше кнопки
+    session.calls.clear()
+    await feed(bot, reply_update(copy43, text="ответ"), db)
+    assert sent_to(session, 42) == [] and len(sent_to(session, 43)) == 1
+    assert "<code>43</code>" in texts_to(session, 1000)[-1]
+    await feed(bot, message_update("ещё текст", uid=1000), db)
+    assert sent_to(session, 42) == []
+
+
+async def test_lost_ticket_card_is_sent_again(tg, db):
+    """Карточка не дошла (сбой Telegram), а копия дошла: обращение навсегда оставалось без
+    имени и подписки клиента — карточка больше не отправлялась."""
+    bot, session = tg
+    failed = []
+
+    def drop_first_card(method) -> None:
+        text = getattr(method, "text", None) or ""
+        if type(method).__name__ == "SendMessage" and "Обращение" in text and not failed:
+            failed.append(method)
+            raise TelegramBadRequest(method=method, message="Bad Request: sudden failure")
+
+    session.hooks.append(drop_first_card)
+    await open_ticket(bot, db, 42, "первое")
+    await feed(bot, message_update("второе", uid=42), db)
+    cards = [t for t in texts_to(session, 1000) if "Обращение в поддержку" in t]
+    assert failed and len(cards) == 1
+    assert sum("отправлено в поддержку" in t for t in texts_to(session, 42)) == 1
+
+
+async def test_album_of_ten_reaches_support_whole(tg, db, monkeypatch):
+    """«Написать в поддержку» и альбом из 10 скриншотов — 11 апдейтов: лимит частоты
+    отбрасывал последний снимок. Альбом считается одним событием."""
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    for _ in range(10):
+        await feed(bot, message_update(photo=photo, media_group_id="album-10"), db)
+    assert len(admin_copies(session)) == 10
+
+
+async def test_admin_is_not_throttled(tg, db, monkeypatch):
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    for _ in range(BURST + 5):
+        await feed(bot, message_update("/keys", uid=1000), db)
+    assert len(sent_to(session, 1000)) == BURST + 5
+
+
+async def test_stars_invoice_cannot_be_paid_from_forwarded_copy(tg, db):
+    """Без start_parameter пересланную копию счёта можно оплатить в любом чате, а оплату
+    вне лички бот не обрабатывает: Stars списаны, подписки нет."""
+    bot, session = tg
+    await feed(bot, callback_update(BuyTariff(code="pro").pack()), db)
+    (invoice,) = session.named("SendInvoice")
+    assert invoice.start_parameter == "buy_pro"
+
+
+async def test_grant_names_the_client(tg, db):
+    bot, session = tg
+    await db.upsert_user(42, "neo", "Neo Anderson")
+    await feed(bot, message_update("/grant 42 pro", uid=1000), db)
+    text = texts_to(session, 1000)[-1]
+    assert "Neo Anderson (@neo) · <code>42</code>" in text
 
 
 async def test_message_via_other_bot_is_not_sent_to_support(tg, db):

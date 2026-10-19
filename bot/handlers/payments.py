@@ -99,6 +99,10 @@ async def cb_buy(
             title=f"{SHOP_NAME}: {tariff.title}",
             description=texts.invoice_description(tariff, settings),
             payload=PAYLOAD_PREFIX + tariff.code,
+            # С ним у пересланной копии счёта вместо кнопки оплаты — ссылка на бота. Без него
+            # копию можно оплатить в любом чате, а сообщения об оплате вне лички бот не
+            # обрабатывает (работает только в личке): Stars списаны, подписки нет
+            start_parameter=f"buy_{tariff.code}",
             currency=CURRENCY,
             prices=[
                 LabeledPrice(

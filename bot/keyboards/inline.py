@@ -55,6 +55,13 @@ class SupportWrite(CallbackData, prefix="support"):
     cancel: bool = False
 
 
+class SupportAnswer(CallbackData, prefix="sanswer"):
+    """Админ отвечает клиенту user_id (или отменяет ответ)."""
+
+    user_id: int
+    cancel: bool = False
+
+
 def rotate_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Да, перевыпустить", callback_data=RotateKey(confirm=True), style=DANGER)
@@ -253,4 +260,23 @@ def support_answer_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="Ответить", callback_data=SupportWrite(), style=PRIMARY)
     builder.button(text=BACK, callback_data=Menu(section="main"))
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def support_reply_keyboard(user_id: int, name: str, again: bool = False) -> InlineKeyboardMarkup:
+    """У админа под карточкой обращения и каждой копией сообщения клиента: на кнопке видно,
+    чьё это сообщение и кому уйдёт ответ."""
+    name = name if len(name) <= 24 else name[:23] + "…"
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=f"✍️ {'Ответить ещё' if again else 'Ответить'}: {name} · {user_id}",
+        callback_data=SupportAnswer(user_id=user_id),
+        style=PRIMARY,
+    )
+    return builder.as_markup()
+
+
+def support_answer_cancel_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Отмена", callback_data=SupportAnswer(user_id=user_id, cancel=True))
     return builder.as_markup()

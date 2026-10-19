@@ -2,9 +2,11 @@
 
 from html import escape
 
-from aiogram import Bot, Router
+from aiogram import Bot, F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot import texts
@@ -12,6 +14,7 @@ from bot.catalog import TARIFFS
 from bot.config import Settings
 from bot.db import Database, KeyConflictError
 from bot.filters.admin import IsAdmin
+from bot.handlers.support import COMMAND, AnswerForm, client_label
 from bot.keyboards.inline import profile_keyboard
 from bot.services.access import deliver_activation, deliver_waiting, revoke_notice, shown_key
 from bot.utils import fmt_dt, mask_key, notify_admins, safe_send
@@ -35,6 +38,14 @@ ADMIN_HELP = (
     "/revoke_list — ключи, которые надо деактивировать в панели провайдера\n"
     "/revoked <i>ключ</i> — отметить ключ деактивированным"
 )
+
+
+@router.message(AnswerForm.writing, F.text.regexp(COMMAND))
+async def leave_answer_mode(message: Message, state: FSMContext) -> None:
+    # Админ нажал «Ответить», а потом набрал команду — передумал отвечать. Без этого режим
+    # остался бы, и следующий текст после /stats ушёл бы клиенту
+    await state.clear()
+    raise SkipHandler
 
 
 @router.message(Command("admin"))
@@ -155,8 +166,10 @@ async def cmd_givekey(
             has_subscription=True, key=visible, can_rotate=settings.uses_gateway
         ),
     )
+    # имя рядом с ID: опечатка в ID, попавшая в другого клиента, видна сразу
     await message.answer(
-        f"✅ Ключ привязан к <code>{user_id}</code> ({title})."
+        f"✅ Ключ привязан: {await client_label(db, user_id)} ({title})."
+        + ("\nПрежний ключ клиента заменён." if revoked else "")
         + ("" if delivered else "\n⚠️ Пользователю не удалось отправить сообщение.")
     )
     if revoked:
@@ -186,6 +199,15 @@ async def cmd_grant(
         return
     tariff = parts[1]
     days = int(parts[2]) if len(parts) == 3 else settings.subscription_days
+    if await db.get_user(user_id) is None and not force:
+        # Раньше предупреждение приходило уже после начисления: опечатка в ID забирала ключ
+        # из пула на несуществующего клиента, и отменить это было нечем
+        await message.answer(
+            f"⚠️ Пользователя <code>{user_id}</code> нет в базе — он не запускал бота. "
+            "Проверьте ID. Подписка не начислена.\n\n"
+            f"Начислить всё равно: <code>/grant {user_id} {tariff} {days} force</code>"
+        )
+        return
     sub = await db.get_subscription(user_id)
     if sub and sub.is_active and sub.tariff != tariff and not force:
         # Выдача другого тарифа сжигает оплаченный остаток: например, компенсация «3 дня Pro»
@@ -200,9 +222,12 @@ async def cmd_grant(
         return
     act = await db.grant(user_id, tariff, days)
     delivered = await deliver_activation(bot, db, settings, user_id, act, paid=False)
-    text = f"✅ {TARIFFS[tariff].title} для <code>{user_id}</code> до {fmt_dt(act.expires_at)}"
+    text = (
+        f"✅ {TARIFFS[tariff].title} для {await client_label(db, user_id)} "
+        f"до {fmt_dt(act.expires_at)}"
+    )
     if await db.get_user(user_id) is None:
-        text += "\n⚠️ Такого пользователя нет в базе — он не запускал бота. Проверьте ID."
+        text += "\n⚠️ Такого пользователя нет в базе — он не запускал бота."
     elif not delivered:
         text += "\n⚠️ Клиенту не удалось отправить сообщение (возможно, он заблокировал бота)."
     await message.answer(text)

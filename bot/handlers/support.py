@@ -3,9 +3,12 @@
 Клиент нажимает «Написать в поддержку» — открывается обращение. Всё, что он пишет дальше
 (текст, скриншоты альбомом, файлы, дописки), уходит всем админам: первым сообщением карточка
 клиента, затем копии. Обращение закрывается, когда клиент уходит в любой раздел или команду,
-жмёт «Отмена» или молчит 30 минут. Админ отвечает реплаем на карточку или копию — бот
-пересылает ответ клиенту. Какое сообщение у админа к какому клиенту относится, хранится
-в базе (support_messages).
+жмёт «Отмена» или молчит 30 минут.
+
+Админ отвечает кнопкой «Ответить: Имя · id» под карточкой или копией: следующее его сообщение
+(или альбом) уходит только этому клиенту, и бот подтверждает, кому именно. Можно и реплаем
+на карточку или копию. Какое сообщение у админа к какому клиенту относится, хранится в базе
+(support_messages). Сообщение админа без кнопки и без реплая никуда не уходит.
 """
 
 import asyncio
@@ -31,11 +34,14 @@ from bot.filters.admin import IsAdmin
 from bot.handlers.fallback import USER_CONTENT
 from bot.keyboards.inline import (
     Menu,
+    SupportAnswer,
     SupportWrite,
     main_menu_for,
+    support_answer_cancel_keyboard,
     support_answer_keyboard,
     support_cancel_keyboard,
     support_keyboard,
+    support_reply_keyboard,
 )
 from bot.utils import MAX_RETRY_AFTER, safe_answer, safe_send, show, user_label
 
@@ -44,6 +50,9 @@ router = Router(name="support")
 
 # Обращение закрывается после 30 минут тишины: случайное сообщение через час не уйдёт админам
 WAIT_SECONDS = 30 * 60
+# Режим ответа админа после «Ответить» живёт 15 минут: текст, набранный через час для другого
+# клиента, не уйдёт тому, кому админ собирался ответить когда-то
+ANSWER_WAIT_SECONDS = 15 * 60
 # Не больше сообщений от одного клиента за час: защита админов от флуда
 MAX_MESSAGES_PER_HOUR = 20
 # Настоящая команда («/start», «/tariffs@bot»), а не текст вроде «/v1/chat/completions отдаёт 404»
@@ -60,11 +69,18 @@ CAPTIONABLE = {
 }
 
 _locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+_answer_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _recent: defaultdict[int, deque[float]] = defaultdict(deque)
 _answered_albums: dict[str, float] = {}
 
 
 class SupportForm(StatesGroup):
+    writing = State()
+
+
+class AnswerForm(StatesGroup):
+    """Админ нажал «Ответить»: в данных client_id, label (кому), since и album."""
+
     writing = State()
 
 
@@ -173,8 +189,39 @@ async def _deliver_answer(bot: Bot, message: Message, client_id: int, head: bool
     await message.copy_to(client_id, reply_markup=markup)
 
 
+async def client_name(db: Database, user_id: int) -> str:
+    """Имя клиента для кнопок, без HTML: «Neo» или «@neo», иначе пусто."""
+    user = await db.get_user(user_id)
+    if user is None:
+        return ""
+    return user["full_name"] or (f"@{user['username']}" if user["username"] else "")
+
+
+async def client_label(db: Database, user_id: int) -> str:
+    """Кому уходит ответ, для текста админу (HTML): «Neo (@neo) · <code>42</code>»."""
+    user = await db.get_user(user_id)
+    name = escape(user["full_name"] or "") if user else ""
+    if user and user["username"]:
+        name = f"{name} (@{escape(user['username'])})".strip()
+    return f"{name} · <code>{user_id}</code>" if name else f"<code>{user_id}</code>"
+
+
+async def _confirm(message: Message, db: Database, client_id: int) -> None:
+    """Админ видит, кому ушёл ответ, и может сразу дописать этому же клиенту."""
+    await message.reply(
+        texts.support_answer_sent(await client_label(db, client_id)),
+        reply_markup=support_reply_keyboard(client_id, await client_name(db, client_id), True),
+    )
+
+
 @router.message(IsAdmin(), support_client)
-async def admin_answer(message: Message, bot: Bot, client_id: int) -> None:
+async def admin_answer(
+    message: Message, bot: Bot, db: Database, state: FSMContext, client_id: int
+) -> None:
+    # реплай указывает клиента явно; режим «Ответить» для другого клиента больше не нужен,
+    # иначе следующее сообщение ушло бы тому клиенту
+    if await state.get_state() == AnswerForm.writing.state:
+        await state.clear()
     head = _first_of_album(message.media_group_id)
     try:
         await _deliver_answer(bot, message, client_id, head)
@@ -182,7 +229,77 @@ async def admin_answer(message: Message, bot: Bot, client_id: int) -> None:
         await message.reply(f"❌ Ответ не доставлен: {escape(str(e))}")
         return
     if head:
-        await message.reply("✅ Ответ отправлен клиенту")
+        await _confirm(message, db, client_id)
+
+
+@router.callback_query(IsAdmin(), SupportAnswer.filter(F.cancel))
+async def cb_answer_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.edit_text("Ответ отменён, клиенту ничего не отправлено.")
+        except TelegramAPIError:
+            pass
+    await safe_answer(callback)
+
+
+@router.callback_query(IsAdmin(), SupportAnswer.filter())
+async def cb_answer(
+    callback: CallbackQuery, callback_data: SupportAnswer, state: FSMContext, db: Database
+) -> None:
+    client_id = callback_data.user_id
+    label = await client_label(db, client_id)
+    await state.set_state(AnswerForm.writing)
+    await state.set_data({"client_id": client_id, "label": label, "since": time.time()})
+    await safe_send(
+        callback.bot,
+        callback.from_user.id,
+        texts.support_answer_prompt(label),
+        reply_markup=support_answer_cancel_keyboard(client_id),
+    )
+    await safe_answer(callback)
+
+
+@router.message(AnswerForm.writing, F.text.regexp(COMMAND))
+async def answer_leave_on_command(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    raise SkipHandler
+
+
+@router.callback_query(AnswerForm.writing, ~SupportAnswer.filter())
+async def answer_leave_on_button(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    raise SkipHandler
+
+
+@router.message(AnswerForm.writing, F.content_type.in_(USER_CONTENT))
+async def answer_message(message: Message, state: FSMContext, bot: Bot, db: Database) -> None:
+    # Альбом — несколько апдейтов одновременно: по очереди, чтобы весь альбом ушёл одному
+    # клиенту, заголовок и подтверждение — один раз, а режим закрылся после ответа
+    async with _answer_locks[message.chat.id]:
+        if await state.get_state() != AnswerForm.writing.state:
+            raise SkipHandler  # режим закрыт предыдущим сообщением
+        data = await state.get_data()
+        album = data.get("album")
+        expired = time.time() - data.get("since", 0) > ANSWER_WAIT_SECONDS
+        if expired or (album is not None and message.media_group_id != album):
+            # ответ уже ушёл (или режим устарел): это сообщение никому не адресовано
+            await state.clear()
+            raise SkipHandler
+        client_id = data["client_id"]
+        head = album is None
+        try:
+            await _deliver_answer(bot, message, client_id, head)
+        except TelegramAPIError as e:
+            await state.clear()
+            await message.reply(f"❌ Ответ не доставлен: {escape(str(e))}")
+            return
+        if message.media_group_id:
+            await state.update_data(album=message.media_group_id)
+        else:
+            await state.clear()
+        if head:
+            await _confirm(message, db, client_id)
 
 
 # --- раздел поддержки ---
@@ -216,7 +333,7 @@ async def cb_support_cancel(callback: CallbackQuery, state: FSMContext, settings
 
 async def _open(state: FSMContext) -> None:
     await state.set_state(SupportForm.writing)
-    await state.update_data(since=time.time(), ticket=False, limited=False)
+    await state.update_data(since=time.time(), ticket=False, limited=False, acked=False)
 
 
 @router.callback_query(SupportWrite.filter())
@@ -260,17 +377,26 @@ async def _forward(
 
         first = not data.get("ticket")
         sub = await db.get_subscription(user.id)
+        # на кнопке под карточкой и под каждой копией — чьё это сообщение: дописки разных
+        # клиентов приходят вперемешку, и голая копия не говорила, от кого она
+        reply_markup = support_reply_keyboard(user.id, user.full_name or user.username or "")
         delivered = 0
+        card_sent = False
         for admin_id in settings.admin_ids:
             if first:
                 card = await _with_retry(
                     lambda a=admin_id: bot.send_message(
-                        a, texts.support_ticket(user.id, user_label(user), sub)
+                        a,
+                        texts.support_ticket(user.id, user_label(user), sub),
+                        reply_markup=reply_markup,
                     )
                 )
                 if card is not None:
+                    card_sent = True
                     await db.add_support_message(admin_id, card.message_id, user.id)
-            copy = await _with_retry(lambda a=admin_id: message.copy_to(a))
+            copy = await _with_retry(
+                lambda a=admin_id: message.copy_to(a, reply_markup=reply_markup)
+            )
             if copy is None:
                 continue
             await db.add_support_message(admin_id, copy.message_id, user.id)
@@ -282,8 +408,10 @@ async def _forward(
                 reply_markup=support_keyboard(settings.support_username),
             )
             return
-        await state.update_data(ticket=True, since=now)
-        if first:
+        # карточка не дошла ни до одного админа — пошлём её со следующим сообщением,
+        # иначе обращение так и осталось бы без имени и подписки клиента
+        await state.update_data(ticket=not first or card_sent, since=now, acked=True)
+        if not data.get("acked"):
             await message.answer(texts.support_sent(), reply_markup=main_menu_for(sub))
 
 
