@@ -3,7 +3,7 @@ from aiogram.enums import ContentType
 from aiogram.types import CallbackQuery, Message
 
 from bot.db import Database
-from bot.keyboards.inline import main_menu
+from bot.keyboards.inline import main_menu_for
 from bot.utils import safe_answer
 
 router = Router(name="fallback")
@@ -28,9 +28,8 @@ USER_CONTENT = {
 @router.message(F.content_type.in_(USER_CONTENT))
 async def unknown_message(message: Message, db: Database) -> None:
     sub = await db.get_subscription(message.from_user.id)
-    has_sub = sub is not None and sub.is_active
     await message.answer(
-        "Не понял запрос. Выберите раздел в меню:", reply_markup=main_menu(has_sub)
+        "Не понял запрос. Выберите раздел в меню:", reply_markup=main_menu_for(sub)
     )
 
 

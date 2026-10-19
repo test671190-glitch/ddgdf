@@ -3,6 +3,7 @@ from aiogram.types import CopyTextButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.catalog import FAQ, FAQ_BUTTONS, MODEL_CATEGORIES, TARIFFS_ON_SALE, Tariff
+from bot.db import Subscription
 
 # Цвета кнопок Telegram: primary — синяя, success — зелёная, danger — красная
 PRIMARY = "primary"
@@ -88,6 +89,12 @@ def main_menu(has_subscription: bool = False, renewable: bool = True) -> InlineK
     builder.button(text="Поддержка", callback_data=Menu(section="support"))
     builder.adjust(1, 2, 2, 2)
     return builder.as_markup()
+
+
+def main_menu_for(sub: Subscription | None) -> InlineKeyboardMarkup:
+    """Главное меню по подписке клиента: продлить, сменить снятый с продажи тариф или купить."""
+    has_subscription = sub is not None and sub.is_active
+    return main_menu(has_subscription, sub is None or sub.tariff in TARIFFS_ON_SALE)
 
 
 def back(section: str = "main", text: str = BACK) -> InlineKeyboardMarkup:

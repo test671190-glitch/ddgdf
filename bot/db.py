@@ -668,25 +668,27 @@ class Database:
     # --- статистика ---
 
     async def stats(self, exclude_users: list[int] | tuple[int, ...] = ()) -> dict:
-        """exclude_users — кого не считать клиентами (админы тоже пишут боту)."""
+        """exclude_users — кого не считать клиентами (админы тоже пишут боту, выдают себе
+        подписки и проверяют оплату): они не попадают ни в пользователей, ни в подписки,
+        ни в оплаты."""
         now = _iso(utcnow())
-        marks = ",".join("?" * len(exclude_users))
-        users = await self._one(
-            f"SELECT COUNT(*) AS n FROM users WHERE id NOT IN ({marks})", tuple(exclude_users)
-        )
+        skip = tuple(exclude_users)
+        marks = ",".join("?" * len(skip))
+        users = await self._one(f"SELECT COUNT(*) AS n FROM users WHERE id NOT IN ({marks})", skip)
         active = await self._all(
-            "SELECT tariff, COUNT(*) AS n FROM subscriptions WHERE expires_at > ? GROUP BY tariff",
-            (now,),
+            "SELECT tariff, COUNT(*) AS n FROM subscriptions WHERE expires_at > ? "
+            f"AND user_id NOT IN ({marks}) GROUP BY tariff",
+            (now, *skip),
         )
         pays = await self._one(
             "SELECT COUNT(*) AS n, COALESCE(SUM(stars), 0) AS stars FROM payments "
-            "WHERE refunded=0 AND charge_id NOT LIKE ?",
-            (CRYPTO_PREFIX + "%",),
+            f"WHERE refunded=0 AND charge_id NOT LIKE ? AND user_id NOT IN ({marks})",
+            (CRYPTO_PREFIX + "%", *skip),
         )
         crypto = await self._all(
             "SELECT tariff, COUNT(*) AS n FROM payments WHERE refunded=0 AND charge_id LIKE ? "
-            "GROUP BY tariff",
-            (CRYPTO_PREFIX + "%",),
+            f"AND user_id NOT IN ({marks}) GROUP BY tariff",
+            (CRYPTO_PREFIX + "%", *skip),
         )
         return {
             "users": users["n"] if users else 0,

@@ -16,6 +16,7 @@ from aiogram.types import (
     Chat,
     Message,
     MessageAutoDeleteTimerChanged,
+    MessageEntity,
     MessageId,
     PhotoSize,
     SuccessfulPayment,
@@ -293,9 +294,10 @@ async def test_admin_photo_answer_is_copied(tg, db):
     copy_id = (await db._all("SELECT message_id FROM support_messages ORDER BY message_id"))[-1]
     photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
     await feed(bot, reply_update(copy_id["message_id"], photo=photo, caption="вот так"), db)
-    header, copied = sent_to(session, 42)
-    assert "Ответ поддержки" in header.text
+    # одно сообщение: заголовок ответа в подписи к фото
+    (copied,) = sent_to(session, 42)
     assert type(copied).__name__ == "CopyMessage" and copied.from_chat_id == 1000
+    assert copied.caption == "Ответ поддержки\n\nвот так"
 
 
 async def test_admin_reply_to_other_message_is_not_forwarded(tg, db):
@@ -436,3 +438,127 @@ async def test_expired_crypto_invoice_offers_new_invoice(tg):
     labels = [b.text for row in edit.reply_markup.inline_keyboard for b in row]
     assert labels[0] == "Новый счёт" and "Продлить" not in labels
     await database.close()
+
+
+def admin_copies(session: FakeSession) -> list:
+    return [m for m in sent_to(session, 1000) if type(m).__name__ == "CopyMessage"]
+
+
+async def test_album_and_follow_up_reach_support_as_one_ticket(tg, db):
+    """Альбом из трёх скриншотов и дописка следом: раньше доходило только первое сообщение,
+    остальное получало «Не понял запрос»."""
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    for _ in range(3):
+        await feed(bot, message_update(photo=photo, media_group_id="album-1"), db)
+    await feed(bot, message_update("и ещё: ключ не работает"), db)
+    cards = [m for m in sent_to(session, 1000) if type(m).__name__ == "SendMessage"]
+    assert len(cards) == 1  # одна карточка на обращение
+    assert len(admin_copies(session)) == 4
+    replies = [m.text for m in sent_to(session, 42)][1:]  # [0] — приглашение написать
+    assert len(replies) == 1 and "отправлено в поддержку" in replies[0]
+
+
+async def test_leaving_to_menu_closes_ticket(tg, db):
+    """Клиент открыл поддержку, ушёл в тарифы и написал «спасибо» — это не должно уйти
+    админам."""
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, callback_update(Menu(section="tariffs").pack()), db)
+    await feed(bot, message_update("спасибо, всё работает"), db)
+    assert admin_copies(session) == []
+
+
+async def test_path_like_text_is_a_question_not_a_command(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("/v1/chat/completions отдаёт 404"), db)
+    assert len(admin_copies(session)) == 1
+
+
+async def test_admin_answer_starting_with_command_reaches_client(tg, db):
+    """«/profile — там ваш ключ» реплаем на обращение раньше открывало профиль админа."""
+    bot, session = tg
+    card, _ = await ask_support(bot, session, db)
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    await feed(bot, reply_update(card_id, text="/profile — там ваш ключ"), db)
+    (answer,) = sent_to(session, 42)
+    assert answer.text == "Ответ поддержки\n\n/profile — там ваш ключ"
+
+
+async def test_long_admin_answer_is_split(tg, db):
+    """4090 символов + заголовок не влезали в лимит Telegram 4096."""
+    bot, session = tg
+    await ask_support(bot, session, db)
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    await feed(bot, reply_update(card_id, text="я" * 4090), db)
+    header, copied = sent_to(session, 42)
+    assert "Ответ поддержки" in header.text
+    assert type(copied).__name__ == "CopyMessage"
+
+
+async def test_admin_answer_keeps_links(tg, db):
+    bot, session = tg
+    await ask_support(bot, session, db)
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    link = MessageEntity(type="text_link", offset=0, length=10, url="https://x.test/api.html")
+    await feed(bot, reply_update(card_id, text="Инструкция здесь", entities=[link]), db)
+    (answer,) = sent_to(session, 42)
+    moved = next(e for e in answer.entities if e.type == "text_link")
+    assert moved.offset == len("Ответ поддержки\n\n") and moved.url == "https://x.test/api.html"
+
+
+async def test_support_flood_is_limited(tg, db, monkeypatch):
+    import bot.handlers.support as support
+
+    monkeypatch.setattr(support, "MAX_MESSAGES_PER_HOUR", 3)
+    support._recent.clear()
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    for i in range(6):
+        await feed(bot, message_update(f"сообщение {i}"), db)
+    assert len(admin_copies(session)) == 3
+    flood = [m for m in sent_to(session, 42) if "слишком много" in m.text]
+    assert len(flood) == 1
+    support._recent.clear()
+
+
+async def test_client_reply_to_answer_continues_ticket(tg, db):
+    """Клиент ответил реплаем на «Ответ поддержки» — раньше получал «Не понял запрос»."""
+    bot, session = tg
+    answer = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=42, type="private"),
+        from_user=BOT_USER,
+        text="Ответ поддержки\n\nПроверьте ключ",
+    )
+    await feed(bot, message_update("всё равно 401", reply_to_message=answer), db)
+    assert len(admin_copies(session)) == 1
+
+
+async def test_stats_do_not_count_admin_subscriptions(tg, db):
+    bot, session = tg
+    await db.upsert_user(1000, None, "Admin")
+    await db.grant(1000, "pro", 30)
+    await feed(bot, message_update("/stats", uid=1000), db)
+    text = sent_to(session, 1000)[-1].text
+    assert "Пользователей: 0" in text and "Активные подписки: 0" in text
+
+
+async def test_old_refund_link_answers_clearly(tg, db):
+    bot, session = tg
+    await feed(bot, message_update("/refund crypto:5", uid=1000), db)
+    assert "Возвраты отключены" in sent_to(session, 1000)[-1].text
+
+
+async def test_fallback_menu_for_legacy_tariff(tg, db):
+    bot, session = tg
+    await db.grant(42, "start", 30)
+    await feed(bot, message_update("что-то"), db)
+    labels = [b.text for row in sent_to(session, 42)[-1].reply_markup.inline_keyboard for b in row]
+    assert "Сменить тариф" in labels

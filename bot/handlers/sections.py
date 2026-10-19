@@ -21,7 +21,7 @@ from bot.keyboards.inline import (
     api_keyboard,
     back,
     faq_keyboard,
-    main_menu,
+    main_menu_for,
     models_keyboard,
     models_list_keyboard,
     profile_keyboard,
@@ -55,9 +55,7 @@ async def render_profile(
 
 async def render_main(user: User, db: Database) -> tuple[str, InlineKeyboardMarkup]:
     sub = await db.get_subscription(user.id)
-    has_sub = sub is not None and sub.is_active
-    renewable = sub is None or sub.tariff in TARIFFS_ON_SALE
-    return texts.welcome(user.first_name, sub), main_menu(has_sub, renewable)
+    return texts.welcome(user.first_name, sub), main_menu_for(sub)
 
 
 # --- главное меню ---
@@ -175,7 +173,12 @@ async def cb_rotate_key(
         return
     await db.rotate_client_key(callback.from_user.id)
     text, markup = await render_profile(callback.from_user.id, db, settings)
-    await show(callback, "<b>Ключ перевыпущен.</b> Старый больше не работает.\n\n" + text, markup)
+    # прежний ключ остаётся в старых сообщениях (например, в квитанции об оплате) — предупреждаем
+    notice = (
+        "<b>Ключ перевыпущен.</b> Старый, в том числе в прежних сообщениях бота, "
+        "больше не работает.\n\n"
+    )
+    await show(callback, notice + text, markup)
 
 
 # --- API ---

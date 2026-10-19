@@ -240,6 +240,13 @@ async def cmd_user(message: Message, command: CommandObject, db: Database) -> No
     await message.answer("\n".join(lines))
 
 
+@router.message(Command("refund"))
+async def cmd_refund(message: Message) -> None:
+    # в старых уведомлениях об оплате осталась кликабельная /refund — отвечаем понятно,
+    # а не «Не понял запрос»
+    await message.answer("Возвраты отключены.")
+
+
 @router.message(Command("revoke_list"))
 async def cmd_revoke_list(message: Message, db: Database) -> None:
     keys = await db.keys_to_revoke()
