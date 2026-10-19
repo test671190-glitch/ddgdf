@@ -17,6 +17,12 @@ if [ ! -s /root/.ssh/authorized_keys ]; then
   echo "Нет /root/.ssh/authorized_keys — вход по паролю не отключаю, иначе потеряете доступ" >&2
   exit 1
 fi
+# Проверка песочницы ниже ждёт эндпоинт на 127.0.0.1:8081, а без PUBLIC_API_URL бот не
+# запускается вовсе: песочница откатилась бы, и файрвол не включился бы
+if ! grep -qE '^PUBLIC_API_URL=[^[:space:]]+' "$APP_DIR/.env"; then
+  echo "В $APP_DIR/.env нет PUBLIC_API_URL — сначала запустите deploy/gateway.sh" >&2
+  exit 1
+fi
 
 echo "==> SSH: только ключи"
 cat > /etc/ssh/sshd_config.d/00-hardening.conf <<'EOF'
