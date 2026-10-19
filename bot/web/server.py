@@ -353,7 +353,10 @@ class WebApp:
     def _session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
             self._http = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=600)
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=600),
+                # сессия общая на всех клиентов: cookie, поставленная провайдером на запрос
+                # одного клиента, иначе уходила бы с запросами другого (как в gateway.py)
+                cookie_jar=aiohttp.DummyCookieJar(),
             )
         return self._http
 
@@ -385,7 +388,14 @@ class WebApp:
         if body is not None:
             headers["Content-Type"] = "application/json"
         try:
-            async with self._session().request(method, url, data=body, headers=headers) as up:
+            # Без редиректов: aiohttp прошёл бы их сам и унёс ключ провайдера на любой путь
+            # того же хоста, а редирект на внутренний адрес отдал бы его ответ в браузер
+            async with self._session().request(
+                method, url, data=body, headers=headers, allow_redirects=False
+            ) as up:
+                if 300 <= up.status < 400:
+                    logger.warning("Провайдер ответил редиректом %s на %s", up.status, path)
+                    return api_error(502, "upstream_error", "API моделей ответило с ошибкой")
                 if up.status in (401, 402, 403):
                     # Провайдер отклонил ключ из пула (отозван, у аккаунта кончился тариф).
                     # Отдать 401/402 нельзя: сайт решит, что истекла сессия или у клиента нет

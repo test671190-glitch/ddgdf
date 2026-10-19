@@ -1,5 +1,6 @@
 """Сайт: каталог, вход через бота, оплата криптой и прокси к API моделей."""
 
+import contextlib
 import json
 from datetime import timedelta
 
@@ -353,3 +354,65 @@ async def test_cookie_secure_behind_https_proxy(env):
         f"/api/auth/login/{data['token']}", headers={"X-Forwarded-Proto": "https"}
     )
     assert resp.cookies[SESSION_COOKIE]["secure"]
+
+
+@contextlib.asynccontextmanager
+async def provider_env(handler):
+    """Сайт с провайдером handler и двумя клиентами с подпиской (ключи k-one и k-two)."""
+    db = Database(":memory:")
+    await db.connect()
+    upstream_app = web.Application()
+    upstream_app.router.add_route("*", "/v1/{tail:.*}", handler)
+    upstream = TestServer(upstream_app)
+    await upstream.start_server()
+    # по имени, а не по IP: cookie с IP-адресов aiohttp не хранит, а у провайдера домен
+    api_base_url = f"http://localhost:{upstream.port}/v1"
+    settings = Settings(bot_token="1:x", api_base_url=api_base_url, admin_ids=[], public_api_url="")
+    client = TestClient(TestServer(WebApp(db, settings, None, "shopbot").build()))
+    await client.start_server()
+    try:
+        await db.add_keys("pro", ["k-one", "k-two"])
+        for user_id in (1, 2):
+            await db.grant(user_id, "pro", 30)
+        yield client, db
+    finally:
+        await client.close()
+        await upstream.close()
+        await db.close()
+
+
+async def test_provider_cookie_of_one_client_is_not_sent_for_another():
+    """Сессия сайта к провайдеру общая на всех: cookie, которую провайдер поставил на запрос
+    одного клиента, уходила с запросами другого."""
+    cookies: list[str | None] = []
+
+    async def upstream(request: web.Request) -> web.Response:
+        cookies.append(request.headers.get("Cookie"))
+        resp = web.json_response({"ok": True})
+        resp.set_cookie("provider_session", request.headers["Authorization"].split()[-1])
+        return resp
+
+    async with provider_env(upstream) as (client, db):
+        for user_id in (1, 2):
+            await login(client, db, user_id)
+            resp = await client.post("/api/chat/completions", json={"model": "x", "messages": []})
+            assert resp.status == 200
+            await client.post("/api/auth/logout")
+    assert cookies == [None, None]
+
+
+async def test_provider_redirect_is_not_followed_with_key():
+    """Сайт сам проходил редиректы провайдера и уносил ключ на любой путь того же хоста."""
+    hits: list[str] = []
+
+    async def upstream(request: web.Request) -> web.Response:
+        hits.append(request.match_info["tail"])
+        if request.match_info["tail"] == "videos/vid_1":
+            raise web.HTTPFound("/v1/dashboard/billing")
+        return web.json_response({"billing": "secret"})
+
+    async with provider_env(upstream) as (client, db):
+        await login(client, db, 1)
+        resp = await client.get("/api/videos/vid_1")
+        assert resp.status == 502 and "secret" not in await resp.text()
+    assert hits == ["videos/vid_1"]
