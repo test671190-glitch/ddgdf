@@ -76,6 +76,8 @@ copy .env.example .env   # заполнить BOT_TOKEN, ADMIN_IDS и остал
 .\.venv\Scripts\python -m bot
 ```
 
+Без `PUBLIC_API_URL` бот не запускается: клиенты получали бы ключи провайдера напрямую. Для такого режима (например, локальной проверки) нужно явно указать `ALLOW_DIRECT_KEYS=true`.
+
 Проверки: `.\.venv\Scripts\python -m pytest` и `.\.venv\Scripts\python -m ruff check .`
 
 Сайт: `.\.venv\Scripts\python scripts/build_docs.py` → результат в `docs/dist/`.
@@ -84,7 +86,7 @@ copy .env.example .env   # заполнить BOT_TOKEN, ADMIN_IDS и остал
 
 Ubuntu 24.04, Profitserver (Амстердам), `154.83.140.29`. Код в `/opt/unknownshop`, бот работает от пользователя `unknownshop` в песочнице systemd, наружу смотрит только Caddy (80/443).
 
-- Первая установка: `deploy/setup.sh`, затем `deploy/gateway.sh` (Caddy, HTTPS, эндпоинт).
+- Первая установка: `deploy/setup.sh`, затем `deploy/gateway.sh` (Caddy, HTTPS, эндпоинт). Бот запустится после `gateway.sh`: он прописывает `PUBLIC_API_URL` в `.env`.
 - Обновление: собрать архив `tar -czf update.tar.gz --exclude=__pycache__ bot deploy requirements.txt`, загрузить в `/root/` и выполнить `deploy/update.sh`. База и `.env` на сервере не трогаются.
 - Логи: `journalctl -u unknownshop -f`, `journalctl -u caddy -f`.
 

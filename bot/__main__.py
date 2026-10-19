@@ -61,6 +61,12 @@ def build_dispatcher(**data) -> Dispatcher:
 async def main() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
+    if not settings.uses_gateway and not settings.allow_direct_keys:
+        logging.critical(
+            "PUBLIC_API_URL не задан: клиенты получили бы ключи провайдера напрямую. "
+            "Укажите PUBLIC_API_URL в .env, а если прямой режим нужен — ALLOW_DIRECT_KEYS=true"
+        )
+        return
 
     # Бот создаётся до открытия базы: неверный формат BOT_TOKEN падает здесь, а открытая база
     # (её поток не фоновый) не дала бы процессу завершиться — systemd считал бы его рабочим

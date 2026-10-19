@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     public_api_url: str = ""
     gateway_host: str = "127.0.0.1"
     gateway_port: int = 8081
+    # Без эндпоинта бот запускается, только если это включено явно: иначе строка PUBLIC_API_URL,
+    # потерянная при правке .env, раздала бы клиентам ключи провайдера
+    allow_direct_keys: bool = False
 
     # Сайт: запускается вместе с ботом
     web_enabled: bool = False
