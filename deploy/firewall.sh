@@ -44,8 +44,15 @@ nft -c -f "$RULES"
 cat > /etc/systemd/system/unknownshop-firewall.service <<EOF
 [Unit]
 Description=unknown shop: per-IP limits for web ports
-Before=network-pre.target caddy.service
+# Как у nftables.service и ufw.service. С зависимостями по умолчанию (After=sysinit.target)
+# вместе с Before=network-pre.target получался цикл: cloud-init.service идёт после сети,
+# но до sysinit.target. При загрузке systemd разорвал бы его, выкинув один из сервисов, —
+# возможно, настройку сети
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target shutdown.target caddy.service
 Wants=network-pre.target
+Conflicts=shutdown.target
 
 [Service]
 Type=oneshot
