@@ -9,8 +9,10 @@
 """
 
 import asyncio
+import ipaddress
 import logging
 import re
+import socket
 import time
 from collections.abc import Awaitable, Callable
 
@@ -21,15 +23,38 @@ from yarl import URL
 from bot.catalog import MAX_CONCURRENT_REQUESTS, MAX_REQUESTS_PER_SECOND, SHOP_NAME
 from bot.config import Settings
 from bot.db import CLIENT_KEY_PREFIX, Database
+from bot.ratelimit import RateLimiter, ip_key
 
 Alert = Callable[[str], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
-MAX_BODY = 50 * 1024 * 1024  # картинки-референсы приходят в base64
-# Первые части путей, которые можно проксировать (/v1/<root>/...)
-ALLOWED_ROOTS = {"chat", "completions", "messages", "models", "images", "videos", "responses"}
-SAFE_PATH = re.compile(r"[A-Za-z0-9._\-/:]+")
+# Картинки-референсы приходят в base64. 25 МБ хватает на десяток фото; больше на сервере
+# с 1 ГБ памяти опасно: 20 одновременных запросов по 50 МБ съедали всю память
+MAX_BODY = 25 * 1024 * 1024
+# Тела больше этого читаем не больше чем в BIG_BODY_SLOTS запросах сразу на весь эндпоинт
+BIG_BODY = 2 * 1024 * 1024
+BIG_BODY_SLOTS = 6
+# Что можно проксировать: метод и путь после /v1/. Только запросы к моделям — без списков,
+# чтения и удаления сохранённых данных: ключи провайдера переходят от клиента к клиенту,
+# и иначе новый покупатель мог бы читать или удалять данные прежнего
+ROUTES: tuple[tuple[str, re.Pattern], ...] = tuple(
+    (method, re.compile(pattern))
+    for method, pattern in (
+        ("POST", r"chat/completions"),
+        ("POST", r"completions"),
+        ("POST", r"responses"),
+        ("POST", r"messages"),
+        ("POST", r"messages/count_tokens"),
+        ("GET", r"models"),
+        ("GET", r"models/[A-Za-z0-9._:-]+"),
+        ("POST", r"images/generations"),
+        ("POST", r"images/edits"),
+        ("POST", r"videos"),
+        ("GET", r"videos/[A-Za-z0-9_-]+"),
+        ("GET", r"videos/[A-Za-z0-9_-]+/content"),
+    )
+)
 BAD_KEY_ALERT_INTERVAL = 3600  # не чаще раза в час на один ключ
 # Одновременных запросов к провайдеру. По умолчанию у aiohttp 100, и ожидание слота ничем
 # не ограничено: сотня долгих запросов одного клиента вешала эндпоинт всем остальным
@@ -54,21 +79,19 @@ FORWARD_REQUEST_HEADERS = (
     "user-agent",
     "openai-beta",
 )
-# Заголовки, которые нельзя пересылать через прокси
-HOP_BY_HOP = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-    "content-length",
-    "server",
-    "date",
-    "set-cookie",
+# Заголовки ответа провайдера, которые отдаём клиенту. Остальное (организация и аккаунт
+# провайдера, Via, Location, cookies) клиенту знать незачем
+FORWARD_RESPONSE_HEADERS = {
+    "content-type",
+    "content-encoding",
+    "content-disposition",
+    "cache-control",
+    "retry-after",
+    "x-request-id",
+    "request-id",
+    "openai-processing-ms",
 }
+FORWARD_RESPONSE_PREFIXES = ("x-ratelimit-", "anthropic-ratelimit-", "x-plan-")
 
 
 def api_error(status: int, code: str, message: str, kind: str = "invalid_request_error"):
@@ -89,19 +112,19 @@ async def json_errors(request: web.Request, handler) -> web.StreamResponse:
         if e.status == 404:
             return api_error(404, "not_found", "Такого эндпоинта нет")
         if e.status == 413:
-            return api_error(413, "request_too_large", "Тело запроса больше 50 МБ")
+            return api_error(413, "request_too_large", "Тело запроса больше 25 МБ")
         return api_error(e.status, f"http_{e.status}", e.reason)
 
 
-def is_allowed_path(path: str) -> bool:
-    """Пропускаем только эндпоинты моделей и без «..»: иначе через наш ключ провайдера
-    можно было бы дотянуться до других адресов провайдера (настройки аккаунта и т. п.)."""
-    if not SAFE_PATH.fullmatch(path):
-        return False
-    segments = path.split("/")
-    if any(s in ("", ".", "..") for s in segments):
-        return False
-    return segments[0] in ALLOWED_ROOTS
+def is_allowed(method: str, path: str) -> bool:
+    """Только запросы к моделям из ROUTES. fullmatch по символам [A-Za-z0-9._:-] между «/»
+    не пропускает «..», пустые сегменты и закодированные символы."""
+    return any(m == method and p.fullmatch(path) for m, p in ROUTES)
+
+
+def forward_response_header(name: str) -> bool:
+    lower = name.lower()
+    return lower in FORWARD_RESPONSE_HEADERS or lower.startswith(FORWARD_RESPONSE_PREFIXES)
 
 
 def client_ip(request: web.Request) -> str:
@@ -114,26 +137,29 @@ def client_ip(request: web.Request) -> str:
     return remote
 
 
-class RateLimiter:
-    """Не больше rate запросов в секунду с одного адреса (ведро токенов, всплеск до rate)."""
-
-    def __init__(self, rate: int) -> None:
-        self.rate = rate
-        self._buckets: dict[str, tuple[float, float]] = {}  # адрес -> (токены, время)
-        self._cleaned = time.monotonic()
-
-    def allow(self, key: str) -> bool:
-        now = time.monotonic()
-        tokens, last = self._buckets.get(key, (float(self.rate), now))
-        tokens = min(float(self.rate), tokens + (now - last) * self.rate)
-        allowed = tokens >= 1
-        self._buckets[key] = (tokens - 1 if allowed else tokens, now)
-        if now - self._cleaned > 60:
-            # через секунду тишины ведро снова полное: такие записи можно забыть,
-            # иначе словарь рос бы с каждым новым адресом
-            self._buckets = {k: v for k, v in self._buckets.items() if now - v[1] < 1}
-            self._cleaned = now
-        return allowed
+async def is_public_host(url: URL) -> bool:
+    """Чужой хост редиректа — только по https и только на публичные адреса: иначе ответ
+    провайдера (или того, кто его подменил) мог бы отправить наш запрос на localhost сервера
+    (админка Caddy) или во внутреннюю сеть хостера."""
+    if url.scheme != "https" or not url.host:
+        return False
+    try:
+        return ipaddress.ip_address(url.host).is_global
+    except ValueError:
+        pass
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            url.host, url.port or 443, type=socket.SOCK_STREAM
+        )
+    except OSError:
+        return False
+    addresses = []
+    for info in infos:
+        try:
+            addresses.append(ipaddress.ip_address(info[4][0]))
+        except ValueError:  # адрес с зоной (fe80::1%eth0) — точно не публичный
+            return False
+    return bool(addresses) and all(a.is_global for a in addresses)
 
 
 def client_key_from(request: web.Request) -> str | None:
@@ -153,6 +179,9 @@ class Gateway:
         self._alerts: set[asyncio.Task] = set()  # ссылки, чтобы задачи не собрал GC
         self._in_flight: dict[int, int] = {}  # user_id -> запросов к провайдеру прямо сейчас
         self._per_ip = RateLimiter(MAX_REQUESTS_PER_IP)
+        self._big_bodies = asyncio.Semaphore(BIG_BODY_SLOTS)
+        # только для тестов: редирект на локальный «CDN» без https
+        self.allow_private_redirects = False
 
     def _report_bad_upstream_key(self, user_id: int, key: str, status: int) -> None:
         logger.error("Ключ провайдера пользователя %s отклонён (%s)", user_id, status)
@@ -213,6 +242,7 @@ class Gateway:
         session = self._session()
         base = URL(self.settings.api_base_url)
         provider = (base.scheme, base.host, base.port)  # port учитывает порт по умолчанию
+        base_path = base.path.rstrip("/") + "/"
         keyed = True
         up = await session.request(
             method, url, params=params, data=body, headers=headers, allow_redirects=False
@@ -227,10 +257,24 @@ class Gateway:
                 target_host = (target.scheme, target.host, target.port)
             except ValueError as e:  # битый Location — ошибка провайдера, клиенту 502
                 raise aiohttp.InvalidUrlRedirectClientError(location, str(e)) from e
-            if keyed and target_host != provider:
-                headers = {k: v for k, v in headers.items() if k not in PROVIDER_AUTH_HEADERS}
-                keyed = False
             if up.status == 303 or (up.status in (301, 302) and method == "POST"):
+                method, body = "GET", None
+            if target_host == provider and keyed:
+                # Тот же провайдер и ещё с ключом: путь цели тоже должен быть из ROUTES,
+                # иначе редирект увёл бы ключ на настройки аккаунта, биллинг и т. п.
+                rest = target.path[len(base_path) :] if target.path.startswith(base_path) else ""
+                if not is_allowed(method, rest):
+                    raise aiohttp.InvalidUrlRedirectClientError(location, "path not allowed")
+            else:
+                if not self.allow_private_redirects and not await is_public_host(target):
+                    raise aiohttp.InvalidUrlRedirectClientError(location, "private target")
+                # Чужой хост (CDN с файлом): без ключа провайдера и без тела клиента
+                headers = {
+                    k: v
+                    for k, v in headers.items()
+                    if k not in PROVIDER_AUTH_HEADERS and k != "content-type"
+                }
+                keyed = False
                 method, body = "GET", None
             up = await session.request(
                 method, target, data=body, headers=headers, allow_redirects=False
@@ -270,7 +314,7 @@ class Gateway:
         return user_id, upstream.key
 
     async def proxy(self, request: web.Request) -> web.StreamResponse:
-        if not self._per_ip.allow(client_ip(request)):
+        if not self._per_ip.allow(ip_key(client_ip(request))):
             response = api_error(
                 429,
                 "rate_limited",
@@ -280,7 +324,7 @@ class Gateway:
             response.headers["Retry-After"] = "1"
             return response
         path = request.match_info["path"]
-        if not is_allowed_path(path):
+        if not is_allowed(request.method, path):
             return api_error(404, "not_found", "Такого эндпоинта нет")
         auth = await self._upstream_key(request)
         if isinstance(auth, web.Response):
@@ -301,6 +345,11 @@ class Gateway:
             return response
         self._in_flight[user_id] = self._in_flight.get(user_id, 0) + 1
         try:
+            if (request.content_length or 0) > BIG_BODY:
+                # большие тела (картинки) — не больше BIG_BODY_SLOTS сразу на весь эндпоинт,
+                # иначе несколько клиентов могли бы занять всю память сервера
+                async with self._big_bodies:
+                    return await self._forward(request, path, user_id, upstream_key)
             return await self._forward(request, path, user_id, upstream_key)
         finally:
             self._in_flight[user_id] -= 1
@@ -337,7 +386,7 @@ class Gateway:
                     )
                 response = web.StreamResponse(status=up.status, reason=up.reason)
                 for name, value in up.headers.items():
-                    if name.lower() not in HOP_BY_HOP:
+                    if forward_response_header(name):
                         response.headers.add(name, value)
                 if up.content_type == "text/event-stream":
                     response.headers["Cache-Control"] = "no-cache"

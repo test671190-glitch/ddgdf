@@ -44,7 +44,11 @@ async def fake_upstream(request: web.Request) -> web.StreamResponse:
         await resp.write(b"data: [DONE]\n\n")
         await resp.write_eof()
         return resp
-    return web.json_response({"ok": True}, status=200, headers={"X-Plan-Remaining": "7"})
+    return web.json_response(
+        {"ok": True},
+        status=200,
+        headers={"X-Plan-Remaining": "7", "openai-organization": "org-shop", "Via": "1.1 provider"},
+    )
 
 
 @pytest.fixture
@@ -151,7 +155,7 @@ async def test_expired_subscription_is_402(env):
         "UPDATE subscriptions SET expires_at=? WHERE user_id=42",
         (_iso(utcnow() - timedelta(minutes=1)),),
     )
-    resp = await client.post("/v1/models", headers={"Authorization": f"Bearer {key}"})
+    resp = await client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
     assert resp.status == 402
     assert (await resp.json())["error"]["code"] == "subscription_required"
 
@@ -270,6 +274,7 @@ async def test_redirect_to_other_host_does_not_carry_provider_key(env):
         db,
         Settings(bot_token="1:x", api_base_url=str(provider_server.make_url("/api/v1"))),
     )
+    gateway.allow_private_redirects = True  # «CDN» в тесте — localhost по http
     gw_client = TestClient(TestServer(gateway.build()))
     await gw_client.start_server()
     try:
@@ -490,7 +495,7 @@ async def redirecting():
         return web.Response(status=302, headers={"Location": "http://[bad"})
 
     async def loop(request: web.Request) -> web.Response:
-        location = f"http://localhost:{ports['up']}/api/v1/chat/loop?sig=secret"
+        location = f"http://localhost:{ports['up']}/api/v1/models/loop?sig=secret"
         return web.Response(status=302, headers={"Location": location})
 
     async def tocdn(request: web.Request) -> web.Response:
@@ -505,7 +510,7 @@ async def redirecting():
         return response
 
     async def hop(request: web.Request) -> web.Response:
-        location = f"http://localhost:{ports['up']}/api/v1/chat/needauth"
+        location = f"http://localhost:{ports['up']}/api/v1/models/needauth"
         return web.Response(status=302, headers={"Location": location})
 
     up_app = web.Application()
@@ -516,7 +521,7 @@ async def redirecting():
         ("tocdn", tocdn),
         ("cookie", cookie),
     ]:
-        up_app.router.add_route("*", f"/api/v1/chat/{name}", handler)
+        up_app.router.add_route("*", f"/api/v1/models/{name}", handler)
     cdn_app = web.Application()
     cdn_app.router.add_get("/hop", hop)
     up, cdn = TestServer(up_app), TestServer(cdn_app)
@@ -539,6 +544,7 @@ async def redirecting():
         Settings(bot_token="1:x", api_base_url=f"http://localhost:{up.port}/api/v1"),
         alert=alert,
     )
+    gateway.allow_private_redirects = True  # «CDN» в тесте — localhost по http
     client = TestClient(TestServer(gateway.build()))
     await client.start_server()
     yield client, {"Authorization": f"Bearer {key}"}, alerts, cookies_seen
@@ -551,7 +557,7 @@ async def redirecting():
 async def test_malformed_redirect_is_502_json(redirecting):
     """Битый Location у провайдера давал 500 text/plain, который SDK клиента не разберёт."""
     client, auth, *_ = redirecting
-    resp = await client.post("/v1/chat/badloc", json={}, headers=auth)
+    resp = await client.get("/v1/models/badloc", headers=auth)
     assert resp.status == 502
     assert (await resp.json())["error"]["code"] == "upstream_error"
 
@@ -559,7 +565,7 @@ async def test_malformed_redirect_is_502_json(redirecting):
 async def test_redirect_loop_does_not_expose_provider_address(redirecting):
     """После пяти редиректов клиенту уходил сырой 302 с адресом и подписью провайдера."""
     client, auth, *_ = redirecting
-    resp = await client.get("/v1/chat/loop", headers=auth, allow_redirects=False)
+    resp = await client.get("/v1/models/loop", headers=auth, allow_redirects=False)
     assert resp.status == 502
     assert "Location" not in resp.headers
 
@@ -568,7 +574,7 @@ async def test_cdn_bouncing_back_to_provider_is_not_bad_key_alert(redirecting):
     """Провайдер → CDN → провайдер: ключ мы сняли сами на чужом хосте. 401 провайдера тогда
     не значит, что ключ сломан, — админ не должен получать ложную тревогу."""
     client, auth, alerts, _ = redirecting
-    resp = await client.get("/v1/chat/tocdn", headers=auth)
+    resp = await client.get("/v1/models/tocdn", headers=auth)
     await asyncio.sleep(0.05)
     assert resp.status == 401
     assert alerts == []
@@ -579,7 +585,7 @@ async def test_provider_cookies_are_not_shared_between_clients(redirecting):
     уходила с запросами следующих."""
     client, auth, _, cookies_seen = redirecting
     for _ in range(2):
-        assert (await client.get("/v1/chat/cookie", headers=auth)).status == 200
+        assert (await client.get("/v1/models/cookie", headers=auth)).status == 200
     assert cookies_seen == [None, None]
 
 
@@ -618,3 +624,110 @@ def test_rate_limiter_refills():
     limiter = gateway_module.RateLimiter(2)
     assert [limiter.allow("a") for _ in range(3)] == [True, True, False]
     assert limiter.allow("b")
+
+
+async def test_redirect_to_internal_address_is_refused(env):
+    """Провайдер (или тот, кто подменил его ответ) редиректит на localhost: раньше эндпоинт
+    шёл туда POST-ом с телом клиента — например, в админку Caddy на 127.0.0.1:2019."""
+    client, db = env
+    internal_hits: list[str] = []
+
+    async def internal(request: web.Request) -> web.Response:
+        internal_hits.append(request.path)
+        return web.json_response({"internal": True})
+
+    internal_app = web.Application()
+    internal_app.router.add_route("*", "/{tail:.*}", internal)
+    internal_server = TestServer(internal_app)
+    await internal_server.start_server()
+
+    async def evil(request: web.Request) -> web.Response:
+        location = str(internal_server.make_url("/load"))
+        return web.Response(status=307, headers={"Location": location})
+
+    evil_app = web.Application()
+    evil_app.router.add_route("*", "/api/v1/{tail:.*}", evil)
+    evil_server = TestServer(evil_app)
+    await evil_server.start_server()
+    gateway = Gateway(
+        db, Settings(bot_token="1:x", api_base_url=str(evil_server.make_url("/api/v1")))
+    )
+    gw_client = TestClient(TestServer(gateway.build()))
+    await gw_client.start_server()
+    try:
+        key = await subscriber(db)
+        resp = await gw_client.post(
+            "/v1/chat/completions", json={"x": 1}, headers={"Authorization": f"Bearer {key}"}
+        )
+        assert resp.status == 502
+        assert internal_hits == []
+    finally:
+        await gw_client.close()
+        await evil_server.close()
+        await internal_server.close()
+
+
+async def test_same_host_redirect_to_other_path_keeps_key_away(env):
+    """307 на /api/v1/dashboard/billing у самого провайдера увёл бы туда ключ провайдера."""
+    client, db = env
+    seen_paths: list[str] = []
+
+    async def provider(request: web.Request) -> web.Response:
+        seen_paths.append(request.path)
+        if request.path.endswith("/models"):
+            raise web.HTTPTemporaryRedirect("/api/v1/dashboard/billing")
+        return web.json_response({"billing": "secret"})
+
+    app = web.Application()
+    app.router.add_route("*", "/api/v1/{tail:.*}", provider)
+    server = TestServer(app)
+    await server.start_server()
+    gateway = Gateway(db, Settings(bot_token="1:x", api_base_url=str(server.make_url("/api/v1"))))
+    gw_client = TestClient(TestServer(gateway.build()))
+    await gw_client.start_server()
+    try:
+        key = await subscriber(db)
+        resp = await gw_client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
+        assert resp.status == 502
+        assert seen_paths == ["/api/v1/models"]
+    finally:
+        await gw_client.close()
+        await server.close()
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("DELETE", "/v1/responses/resp_1"),
+        ("GET", "/v1/responses/resp_1"),
+        ("GET", "/v1/chat/completions"),
+        ("POST", "/v1/models"),
+        ("GET", "/v1/messages/batches/b1/results"),
+    ],
+)
+async def test_only_model_requests_are_forwarded(env, method, path):
+    """Ключи провайдера переходят от клиента к клиенту: чтение и удаление сохранённых данных
+    (ответы, батчи) дало бы новому покупателю доступ к данным прежнего."""
+    client, db = env
+    key = await subscriber(db)
+    resp = await client.request(method, path, headers={"Authorization": f"Bearer {key}"})
+    assert resp.status == 404
+    assert seen == []
+
+
+async def test_provider_account_headers_are_not_forwarded(env):
+    """Организация и инфраструктура провайдера клиенту знать незачем."""
+    client, db = env
+    key = await subscriber(db)
+    resp = await client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
+    assert resp.headers["X-Plan-Remaining"] == "7"
+    assert "openai-organization" not in resp.headers
+    assert "Via" not in resp.headers
+
+
+def test_ipv6_clients_are_counted_per_64_network():
+    from bot.ratelimit import ip_key
+
+    assert ip_key("2001:db8:1:2::1") == ip_key("2001:db8:1:2:ffff::9")
+    assert ip_key("2001:db8:1:3::1") != ip_key("2001:db8:1:2::1")
+    assert ip_key("203.0.113.7") == "203.0.113.7"
