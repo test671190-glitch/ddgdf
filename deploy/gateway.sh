@@ -19,7 +19,7 @@ if ! command -v caddy >/dev/null; then
   apt-get install -y caddy
 fi
 
-cat > /etc/caddy/Caddyfile <<EOF
+cat > /etc/caddy/Caddyfile.new <<EOF
 $HOST {
 	reverse_proxy 127.0.0.1:8081 {
 		# ответы моделей идут потоком — отдаём клиенту сразу, без буфера
@@ -27,11 +27,21 @@ $HOST {
 	}
 }
 
-# голый IP: перенаправляем на HTTPS-адрес (308 сохраняет POST)
-http://$IP {
-	redir https://$HOST{uri} 308
+# HTTP. Запросы к API не перенаправляем: ключ к этому моменту уже ушёл открытым текстом,
+# а Anthropic SDK после редиректа слал бы его так на каждом запросе. Остальное — на HTTPS
+http://$HOST, http://$IP {
+	handle /v1* {
+		header Content-Type "application/json; charset=utf-8"
+		respond \`{"error": {"message": "Используйте https://$HOST/v1: по http ключ передаётся открытым текстом. Перевыпустите ключ в боте: Профиль → Перевыпустить ключ", "type": "invalid_request_error", "code": "https_required"}}\` 400
+	}
+	handle {
+		redir https://$HOST{uri} 308
+	}
 }
 EOF
+# Проверяем новый конфиг до замены: с ошибкой в нём Caddy не поднялся бы после перезагрузки
+caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile
+mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow 80/tcp
@@ -39,7 +49,8 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
 fi
 
 systemctl enable caddy
-systemctl restart caddy
+# reload не обрывает идущие потоки ответов; при первой установке — обычный запуск
+systemctl reload-or-restart caddy
 
 echo "==> Настройки бота"
 cd "$APP_DIR"
