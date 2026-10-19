@@ -731,3 +731,45 @@ def test_ipv6_clients_are_counted_per_64_network():
     assert ip_key("2001:db8:1:2::1") == ip_key("2001:db8:1:2:ffff::9")
     assert ip_key("2001:db8:1:3::1") != ip_key("2001:db8:1:2::1")
     assert ip_key("203.0.113.7") == "203.0.113.7"
+
+
+async def test_dotdot_model_id_is_not_forwarded(env):
+    """«..» проходил шаблон models/...: GET /v1/models/.. уходил с ключом провайдера на корень
+    его API, которого нет в ROUTES."""
+    from yarl import URL
+
+    client, db = env
+    key = await subscriber(db)
+    for raw in ("/v1/models/%2E%2E", "/v1/models/..", "/v1/models/.hidden"):
+        seen.clear()
+        url = URL(str(client.make_url("/")).rstrip("/") + raw, encoded=True)
+        async with client.session.get(url, headers={"Authorization": f"Bearer {key}"}) as resp:
+            assert resp.status == 404, raw
+        assert seen == []
+    resp = await client.get(
+        "/v1/models/claude-sonnet-5.5", headers={"Authorization": f"Bearer {key}"}
+    )
+    assert resp.status == 200 and seen[-1]["path"] == "models/claude-sonnet-5.5"
+
+
+async def test_chunked_body_waits_for_big_body_slot(slow_provider):
+    """Тело без Content-Length (chunked) шло мимо лимита одновременных больших тел: один ключ
+    двадцатью такими запросами по 25 МБ занимал память до MemoryMax, и процесс падал у всех."""
+    gw, session, state, client_key, wait_in_flight = slow_provider
+    auth = await client_key(1)
+    url = gw.make_url("/v1/chat/completions")
+    big = b"x" * (gateway_module.BIG_BODY + 1)
+    slots = gateway_module.BIG_BODY_SLOTS
+    hogs = [asyncio.create_task(session.post(url, data=big, headers=auth)) for _ in range(slots)]
+    await wait_in_flight(slots)
+
+    async def chunks():
+        yield b"x" * 1024
+
+    chunked = asyncio.create_task(session.post(url, data=chunks(), headers=auth))
+    await asyncio.sleep(0.3)
+    assert state["in_flight"] == slots  # ждёт свободный слот, а не идёт к провайдеру
+    state["release"].set()
+    for resp in await asyncio.gather(*hogs, chunked):
+        assert resp.status == 200
+        resp.release()

@@ -47,7 +47,8 @@ ROUTES: tuple[tuple[str, re.Pattern], ...] = tuple(
         ("POST", r"messages"),
         ("POST", r"messages/count_tokens"),
         ("GET", r"models"),
-        ("GET", r"models/[A-Za-z0-9._:-]+"),
+        # id модели не начинается с точки: иначе «..» уводил запрос на корень API провайдера
+        ("GET", r"models/[A-Za-z0-9_:-][A-Za-z0-9._:-]*"),
         ("POST", r"images/generations"),
         ("POST", r"images/edits"),
         ("POST", r"videos"),
@@ -345,7 +346,10 @@ class Gateway:
             return response
         self._in_flight[user_id] = self._in_flight.get(user_id, 0) + 1
         try:
-            if (request.content_length or 0) > BIG_BODY:
+            # Тело без Content-Length (chunked) тоже может быть до MAX_BODY: раньше оно шло мимо
+            # слотов, и один ключ двадцатью такими запросами занимал память до MemoryMax
+            unknown_size = request.content_length is None and request.body_exists
+            if unknown_size or (request.content_length or 0) > BIG_BODY:
                 # большие тела (картинки) — не больше BIG_BODY_SLOTS сразу на весь эндпоинт,
                 # иначе несколько клиентов могли бы занять всю память сервера
                 async with self._big_bodies:
