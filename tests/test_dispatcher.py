@@ -555,6 +555,24 @@ async def test_stats_do_not_count_admin_subscriptions(tg, db):
     assert "Пользователей: 0" in text and "Активные подписки: 0" in text
 
 
+async def test_user_card_masks_keys(tg):
+    """/user показывал ключ провайдера и ключ клиента целиком, а карточку смотрят при разборе
+    обращений, скриншотят и пересылают. Полные ключи на отключение — в /revoke_list."""
+    bot, session = tg
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    try:
+        await db.add_keys("pro", ["up-provider-0123456789"])
+        await db.grant(42, "pro", 30)
+        client_key = await db.get_or_create_client_key(42)
+        await feed(bot, message_update("/user 42", uid=1000), db, settings(**GATEWAY))
+    finally:
+        await db.close()
+    text = sent_to(session, 1000)[-1].text
+    assert "up-provider-0123456789" not in text and client_key not in text
+    assert "…456789" in text and "…" + client_key[-6:] in text
+
+
 async def test_old_refund_link_answers_clearly(tg, db):
     bot, session = tg
     await feed(bot, message_update("/refund crypto:5", uid=1000), db)

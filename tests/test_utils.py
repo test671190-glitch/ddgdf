@@ -1,5 +1,7 @@
 """Отправка сообщений: лимит частоты Telegram не должен терять напоминания и ключи."""
 
+import logging
+
 from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramNetworkError,
@@ -9,7 +11,9 @@ from aiogram.exceptions import (
 from aiogram.methods import SendMessage
 
 import bot.utils as utils
-from bot.utils import safe_send
+from bot.config import Settings
+from bot.services.access import revoke_notice
+from bot.utils import mask_key, notify_admins, safe_send
 
 METHOD = SendMessage(chat_id=7, text="x")
 
@@ -81,3 +85,18 @@ async def test_blocked_user_is_not_retried(monkeypatch):
     bot = FloodBot([TelegramForbiddenError(method=METHOD, message="bot was blocked by the user")])
     assert not await safe_send(bot, 7, "x")
     assert waits == [] and bot.sent == []
+
+
+async def test_lost_admin_notice_does_not_log_keys(caplog):
+    """Без ADMIN_IDS текст уведомления уходил в журнал целиком, а в уведомлениях бывают
+    ключи провайдера — например, «деактивируйте ключ …»."""
+    notice = revoke_notice(42, "up-provider-secret-key", "смена тарифа")
+    with caplog.at_level(logging.WARNING):
+        await notify_admins(FloodBot([]), Settings(_env_file=None, bot_token="1:x"), notice)
+    assert "ADMIN_IDS" in caplog.text
+    assert "up-provider-secret-key" not in caplog.text
+
+
+def test_mask_key_keeps_only_tail():
+    assert mask_key("sk-us-0123456789abcdef") == "…abcdef"
+    assert mask_key("short") == "…"  # у короткого ключа хвост — почти весь ключ

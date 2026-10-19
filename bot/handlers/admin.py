@@ -14,7 +14,7 @@ from bot.db import Database, KeyConflictError
 from bot.filters.admin import IsAdmin
 from bot.keyboards.inline import profile_keyboard
 from bot.services.access import deliver_activation, deliver_waiting, revoke_notice, shown_key
-from bot.utils import fmt_dt, notify_admins, safe_send
+from bot.utils import fmt_dt, mask_key, notify_admins, safe_send
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
@@ -229,14 +229,17 @@ async def cmd_user(message: Message, command: CommandObject, db: Database) -> No
         lines.append(f"Подписка: {_title(sub.tariff)}, {status}, до {fmt_dt(sub.expires_at)}")
     else:
         lines.append("Подписки нет")
+    # Ключи — маской: карточку пользователя смотрят при разборе обращений, скриншотят
+    # и пересылают. Полные ключи на отключение — в /revoke_list
     if key:
         # после смены тарифа при пустом пуле ключ может быть ещё от прежнего тарифа
-        lines.append(f"Ключ провайдера ({_title(key.tariff)}): <code>{escape(key.key)}</code>")
+        masked = escape(mask_key(key.key))
+        lines.append(f"Ключ провайдера ({_title(key.tariff)}): <code>{masked}</code>")
     else:
         lines.append("Ключа нет")
     client_key = await db.get_client_key(user_id)
     if client_key:
-        lines.append(f"Ключ клиента: <code>{escape(client_key)}</code>")
+        lines.append(f"Ключ клиента: <code>{escape(mask_key(client_key))}</code>")
     await message.answer("\n".join(lines))
 
 

@@ -19,6 +19,7 @@ from bot.config import get_settings
 from bot.db import Database
 from bot.gateway import Gateway
 from bot.handlers import get_routers
+from bot.logs import setup_logging
 from bot.middlewares.logging import LoggingMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware
 from bot.middlewares.user import UserMiddleware
@@ -59,10 +60,7 @@ def build_dispatcher(**data) -> Dispatcher:
 
 async def main() -> None:
     settings = get_settings()
-    logging.basicConfig(
-        level=settings.log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    setup_logging(settings.log_level)
 
     # Бот создаётся до открытия базы: неверный формат BOT_TOKEN падает здесь, а открытая база
     # (её поток не фоновый) не дала бы процессу завершиться — systemd считал бы его рабочим

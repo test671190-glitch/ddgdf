@@ -92,10 +92,16 @@ async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
 
 async def notify_admins(bot: Bot, settings: Settings, text: str, **kwargs) -> None:
     if not settings.admin_ids:
-        logger.warning("ADMIN_IDS не заданы, уведомление потеряно: %s", text)
+        # без текста: в уведомлениях бывают ключи провайдера, а журнал читают не только админы
+        logger.warning("ADMIN_IDS не заданы, уведомление администраторам не отправлено")
     for admin_id in settings.admin_ids:
         await safe_send(bot, admin_id, text, **kwargs)
 
 
 def user_label(user: User) -> str:
     return f"@{escape(user.username)}" if user.username else escape(user.full_name)
+
+
+def mask_key(key: str) -> str:
+    """Хвост ключа: по нему ключ узнают и ищут, но не могут им воспользоваться."""
+    return "…" + key[-6:] if len(key) >= 12 else "…"
