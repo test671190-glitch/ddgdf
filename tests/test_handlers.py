@@ -195,7 +195,7 @@ def stars_payment(payload: str, charge_id: str = "ch-1") -> SimpleNamespace:
     message.successful_payment = SimpleNamespace(
         currency="XTR",
         invoice_payload=payload,
-        total_amount=2541,
+        total_amount=3850,
         telegram_payment_charge_id=charge_id,
     )
     return message

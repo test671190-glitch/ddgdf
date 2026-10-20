@@ -176,7 +176,7 @@ async def test_crypto_payment_activates_subscription(env, monkeypatch):
 
     resp = await client.post("/api/pay/crypto", json={"tariff": "pro"})
     order = await resp.json()
-    assert order["amount_usd"] == 33 and order["pay_url"].startswith("https://t.me/CryptoBot")
+    assert order["amount_usd"] == 50 and order["pay_url"].startswith("https://t.me/CryptoBot")
     # Повторный запрос возвращает тот же счёт
     again = await (await client.post("/api/pay/crypto", json={"tariff": "pro"})).json()
     assert again["order_id"] == order["order_id"]

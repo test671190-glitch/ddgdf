@@ -17,10 +17,10 @@ def test_tariff_prices():
     assert {c: t.price_usd for c, t in TARIFFS.items()} == {
         "start": 18,
         "creator": 25,
-        "pro": 33,
-        "unlimited": 80,
+        "pro": 50,
+        "unlimited": 100,
     }
-    assert TARIFFS["pro"].stars(77) == 2541
+    assert TARIFFS["pro"].stars(77) == 3850
 
 
 def test_hidden_tariffs_cannot_be_paid():

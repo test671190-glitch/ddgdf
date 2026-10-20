@@ -79,7 +79,7 @@ export const FALLBACK_CATALOG = Object.freeze({
       title: "Pro",
       emoji: "⚡️",
       tagline: "Для ежедневной работы в IDE и скриптах",
-      price_usd: 33,
+      price_usd: 50,
       stars: null,
       features: [
         "Безлимит на генерацию изображений",
@@ -94,7 +94,7 @@ export const FALLBACK_CATALOG = Object.freeze({
       title: "Unlimited",
       emoji: "👑",
       tagline: "Без ограничений, 24/7",
-      price_usd: 80,
+      price_usd: 100,
       stars: null,
       features: [
         "Полный безлимит на все модели",
