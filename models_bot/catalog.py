@@ -41,13 +41,13 @@ TOP_MODELS = [
         "Баланс скорости и качества на каждый день.",
     ),
     Model("claude-haiku-5.5", "Claude Haiku 5.5", "Anthropic", "Быстрая и лёгкая модель Claude."),
-    Model("gpt-6-sol", "GPT-6 Sol", "OpenAI", "Флагман OpenAI для сложных задач."),
+    Model("gpt-6.1-sol", "GPT-6.1 Sol", "OpenAI", "Новый флагман OpenAI для сложных задач."),
     Model("gpt-6-astra", "GPT-6 Astra", "OpenAI", "Универсальная модель GPT-6."),
     Model("gpt-6-luna", "GPT-6 Luna", "OpenAI", "Быстрая и экономная модель GPT-6."),
 ]
 
 OTHER_MODELS = [
-    Model("gpt-6.1-sol", "GPT-6.1 Sol", "OpenAI", "Обновлённая версия GPT-6 Sol."),
+    Model("gpt-6-sol", "GPT-6 Sol", "OpenAI", "Прошлый флагман OpenAI, до GPT-6.1 Sol."),
     Model("gemini-4-argon", "Gemini 4 Argon", "Google", "Новое поколение Gemini."),
     Model("gemini-3.1-pro-preview", "Gemini 3.1 Pro", "Google", "Gemini для сложных задач."),
     Model("gemini-3.8-flash", "Gemini 3.8 Flash", "Google", "Быстрая модель Gemini."),

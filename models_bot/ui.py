@@ -185,7 +185,7 @@ def models_text() -> str:
 
 
 def other_text() -> str:
-    return "<b>Остальные модели</b>\nGPT-6.1 и линейка Gemini\n\nВыберите модель ↓"
+    return "<b>Остальные модели</b>\nGPT-6 Sol и линейка Gemini\n\nВыберите модель ↓"
 
 
 def model_card(model: Model, prefs: Prefs, open_model: str = "") -> str:

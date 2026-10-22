@@ -169,7 +169,7 @@ def test_main_menu_has_models_settings_and_chats():
 def test_models_menu_lists_claude_then_gpt_then_other():
     names = texts(ui.models_keyboard())
     assert names[:3] == ["✻ Claude Opus 5.5", "✻ Claude Sonnet 5.5", "✻ Claude Haiku 5.5"]
-    assert names[3:6] == ["⌬ GPT-6 Sol", "⌬ GPT-6 Astra", "⌬ GPT-6 Luna"]
+    assert names[3:6] == ["⌬ GPT-6.1 Sol", "⌬ GPT-6 Astra", "⌬ GPT-6 Luna"]
     assert names[6:] == ["Остальные модели →", "← В меню"]
 
 
@@ -207,7 +207,7 @@ def test_back_leads_one_screen_up():
     assert back(ui.delete_keyboard(chat)) == "info:5"
 
 
-def test_other_models_are_gpt_6_1_and_gemini_only():
+def test_other_models_are_gpt_6_sol_and_gemini_only():
     assert [m.vendor for m in OTHER_MODELS] == ["OpenAI"] + ["Google"] * 5
     assert {m.vendor for m in TOP_MODELS} == {"Anthropic", "OpenAI"}
 
@@ -393,7 +393,7 @@ def test_every_screen_and_card_opens(bot):
     [
         ("/start", "⁂ Модели"),
         ("/models", "✻ Claude Opus 5.5"),
-        ("/other", "⌬ GPT-6.1 Sol"),
+        ("/other", "⌬ GPT-6 Sol"),
         ("/chats", "+ Новый чат с Claude Opus 5.5"),
         ("/settings", "Модель · Claude Opus 5.5"),
         ("/start@modelsbot", "⁂ Модели"),
