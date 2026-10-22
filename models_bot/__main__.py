@@ -1,0 +1,45 @@
+﻿"""Каркас бота: меню топ-нейросетей.
+
+Запуск: python -m models_bot (токен — BOT_TOKEN в models_bot/.env).
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+
+from models_bot import ui
+from models_bot.handlers import router
+
+
+def load_env(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and not key.startswith("#"):
+            os.environ.setdefault(key.strip(), value.strip())
+
+
+async def main() -> None:
+    load_env(Path(__file__).with_name(".env"))
+    token = os.environ.get("BOT_TOKEN")
+    if not token:
+        raise SystemExit("BOT_TOKEN не задан: укажите его в models_bot/.env")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
+    bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher()
+    dp.include_router(router)
+    await bot.set_my_commands(ui.COMMANDS)
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
