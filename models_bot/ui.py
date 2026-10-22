@@ -1,23 +1,30 @@
 """Тексты и кнопки. Кнопки — обычные dict в формате Bot API.
 
-Экраны: главное меню (Модели, Настройки) → Модели (Claude, GPT) → Остальные модели;
-у каждой модели — карточка с кнопкой «▸ Начать чат». В настройках — модель, роль,
-память, расход, уведомления, язык и подробность ответов. «Назад» ведёт на экран выше.
+Экраны: главное меню (Модели, Настройки, Мои чаты) → Модели (Claude, GPT) →
+Остальные модели; у каждой модели — карточка с кнопкой «▸ Начать чат». В настройках —
+модель, роль, память, расход, уведомления, язык и подробность ответов.
+«Назад» ведёт на экран выше.
 
-Чат начинается только кнопкой «▸ Начать чат» (или /chat): бот присылает сообщение
-о начале чата и клавиатуру внизу — «↺ Новый диалог» и «■ Завершить чат», а в поле
+Чаты: у пользователя их может быть много, у каждого своя модель и переписка.
+«☰ Мои чаты» — список: нажатие на чат переключает в него, «✎ Изменить» — переименовать
+или удалить. Чат начинается кнопкой «▸ Начать чат» (или /chat): бот присылает сообщение
+о начале и клавиатуру внизу — «☰ Чаты», «↺ Новый диалог», «■ Завершить чат», а в поле
 ввода видно, какой модели вы пишете. Без открытого чата сообщения моделям не уходят.
 
 Данные кнопок: nav:<экран>, card:<модель>:<откуда>, use:<модель>:<откуда>,
-chat:<модель>[:<откуда>], tgl:<настройка>, role:<роль>.
+chat:<модель>[:<откуда>], tgl:<настройка>, role:<роль>, chats:<страница>:<s|e>,
+open:<чат>:<l|i|h> (из списка, карточки чата, подсказки), info:<чат>, ren:<чат>,
+del:<чат>, delok:<чат>, newchat.
 
 Оформление монохромное: только символы Unicode без эмодзи-представления, тонкие
 и одного веса. Знаки разработчиков — в catalog.VENDOR_MARKS, остальное здесь:
-⁂ модели, ⛭ настройки, ▸ начать чат, ■ завершить, ↺ новый диалог, ✎ своя роль,
-ⓘ уведомление, → ← ↓ ↳ переходы, ✓ выбранное, · разделитель.
+⁂ модели, ⛭ настройки, ☰ чаты, ▸ начать или открыть чат, ■ завершить, ↺ новый диалог,
+✎ изменить, ✕ удалить, ⓘ уведомление, → ← ↓ ↳ переходы, ✓ выбранное, · разделитель.
 """
 
-from models_bot.answers import TEST_DAILY_LIMIT, WARN_SHARE, escape, num, plural
+import time
+
+from models_bot.answers import TEST_DAILY_LIMIT, WARN_SHARE, escape, num, plural, shorten
 from models_bot.catalog import (
     CUSTOM_ROLE,
     MODELS,
@@ -27,21 +34,27 @@ from models_bot.catalog import (
     TOP_MODELS,
     Model,
 )
-from models_bot.store import DETAILS, LANGS, Prefs
+from models_bot.store import DETAILS, LANGS, MAX_CHATS, TITLE_LENGTH, Chat, Prefs
 
 BRAND = "unknown shop"
 MODELS_TITLE = "⁂ Модели"
 SETTINGS = "⛭ Настройки"
+MY_CHATS = "☰ Мои чаты"
 START_CHAT = "▸ Начать чат"
+CHATS = "☰ Чаты"
 NEW_DIALOG = "↺ Новый диалог"
 END_CHAT = "■ Завершить чат"
+CHAT_BUTTONS = (CHATS, NEW_DIALOG, END_CHAT)  # клавиатура внизу во время чата
 TO_MENU = "← В меню"
 BACK = "← Назад"
+CHATS_PAGE = 8  # чатов на странице списка
+MSK = 3 * 3600  # время в списке чатов — московское, как и сброс лимита
 
 COMMANDS = [
     {"command": "start", "description": "⌂ Главное меню"},
+    {"command": "chats", "description": "☰ Мои чаты: переключиться"},
     {"command": "models", "description": "⁂ Модели"},
-    {"command": "chat", "description": "▸ Начать чат с основной моделью"},
+    {"command": "chat", "description": "▸ Новый чат с основной моделью"},
     {"command": "new", "description": "↺ Новый диалог"},
     {"command": "stop", "description": "■ Завершить чат"},
     {"command": "settings", "description": "⛭ Настройки"},
@@ -106,20 +119,52 @@ def memory_summary(prefs: Prefs) -> str:
     return "помню переписку" if prefs.memory else "каждый вопрос отдельно"
 
 
+def messages(n: int) -> str:
+    return plural(n, "сообщение", "сообщения", "сообщений")
+
+
+def chat_name(chat: Chat) -> str:
+    """Название чата: первый вопрос или своё, а у пустого — «Чат с моделью»."""
+    if chat.title:
+        return chat.title
+    model = MODELS.get(chat.model)
+    return f"Чат с {model.name}" if model else "Чат"
+
+
+def chat_label(chat: Chat) -> str:
+    model = MODELS.get(chat.model)
+    return f"{model.mark if model else '·'} {chat_name(chat)}"
+
+
+def when(ts: float, now: float | None = None) -> str:
+    """«сегодня 19:40», «вчера 08:15» или «21.10» — по Москве."""
+    now = time.time() if now is None else now
+    day = time.gmtime(ts + MSK)
+    days = int((now + MSK) // 86400) - int((ts + MSK) // 86400)
+    clock = time.strftime("%H:%M", day)
+    if days == 0:
+        return f"сегодня {clock}"
+    if days == 1:
+        return f"вчера {clock}"
+    return time.strftime("%d.%m", day)
+
+
 # Тексты
 
 
-def welcome(first_name: str | None, prefs: Prefs) -> str:
+def welcome(first_name: str | None, prefs: Prefs, chat: Chat | None = None) -> str:
     name = escape(first_name or "друг")
-    if prefs.chat:
+    if chat:
         status = (
-            f"Открыт чат с <b>{escape(MODELS[prefs.chat].label)}</b>: просто пишите сообщения.\n"
-            f"Закончить — «{END_CHAT}» внизу или /stop."
+            f"Открыт чат «{escape(chat_name(chat))}» · {escape(MODELS[chat.model].label)}: "
+            "просто пишите сообщения.\n"
+            f"Переключиться — «{CHATS}» внизу, закрыть — «{END_CHAT}»."
         )
     else:
         status = (
-            f"Чтобы начать чат: {MODELS_TITLE} → выберите модель → «{START_CHAT}».\n"
-            f"Или сразу /chat — чат с основной моделью {escape(MODELS[prefs.model].name)}."
+            f"Начать чат: {MODELS_TITLE} → модель → «{START_CHAT}» или сразу /chat "
+            f"с основной моделью {escape(MODELS[prefs.model].name)}.\n"
+            f"Все ваши чаты — в «{MY_CHATS}»: между ними можно переключаться."
         )
     return (
         f"<b>{BRAND}</b> · нейросети в одном окне\n"
@@ -143,7 +188,8 @@ def other_text() -> str:
     return "<b>Остальные модели</b>\nGPT-6.1 и линейка Gemini\n\nВыберите модель ↓"
 
 
-def model_card(model: Model, prefs: Prefs) -> str:
+def model_card(model: Model, prefs: Prefs, open_model: str = "") -> str:
+    """open_model — модель открытого чата."""
     lines = [
         f"<b>{escape(model.label)}</b>",
         f"<i>{escape(model.vendor)} · тестовая модель</i>",
@@ -152,51 +198,153 @@ def model_card(model: Model, prefs: Prefs) -> str:
         "",
         f"ID · <code>{escape(model.id)}</code>",
     ]
-    if prefs.chat == model.id:
+    if open_model == model.id:
         lines.append("▸ Сейчас открыт чат с этой моделью")
     if prefs.model == model.id:
         lines.append("✓ Основная модель")
     return "\n".join(lines)
 
 
-def chat_started(model: Model, prefs: Prefs, previous: Model | None = None) -> str:
-    head = f"<b>▸ Чат начат · {escape(model.label)}</b>"
-    if previous and previous.id != model.id:
-        head += f"\n<i>Чат с {escape(previous.name)} завершён.</i>"
+def _chat_bottom_hint() -> str:
     return (
-        f"{head}\n\n"
-        f"<blockquote>Роль — {escape(prefs.role_title.lower())}\n"
-        f"Память — {memory_summary(prefs)}\n"
-        f"Ответы — {DETAILS[prefs.detail]}, {LANGS[prefs.lang]}</blockquote>\n\n"
-        f"Напишите сообщение, и {escape(model.name)} ответит.\n"
-        f"Внизу: «{NEW_DIALOG}» очищает переписку, «{END_CHAT}» закрывает чат."
+        f"Внизу: «{CHATS}» — переключиться, «{NEW_DIALOG}» — ещё один чат с этой моделью, "
+        f"«{END_CHAT}» — закрыть."
     )
 
 
-def chat_ended(model: Model | None) -> str:
-    name = f" с {escape(model.name)}" if model else ""
-    return f"■ Чат{name} завершён. Переписка удалена."
+def chat_started(
+    model: Model, prefs: Prefs, previous: Chat | None = None, dropped: list[Chat] = ()
+) -> str:
+    """previous — открытый до этого чат (он сохранён), dropped — удалённые сверх лимита."""
+    lines = [f"<b>▸ Новый чат · {escape(model.label)}</b>"]
+    if previous:
+        lines.append(f"<i>Чат «{escape(chat_name(previous))}» сохранён в «{MY_CHATS}».</i>")
+    for chat in dropped:
+        lines.append(
+            f"<i>Самый давний чат «{escape(chat_name(chat))}» удалён: храню до {MAX_CHATS}.</i>"
+        )
+    lines += [
+        "",
+        f"<blockquote>Роль — {escape(prefs.role_title.lower())}\n"
+        f"Память — {memory_summary(prefs)}\n"
+        f"Ответы — {DETAILS[prefs.detail]}, {LANGS[prefs.lang]}</blockquote>",
+        "",
+        f"Напишите сообщение, и {escape(model.name)} ответит.",
+        _chat_bottom_hint(),
+    ]
+    return "\n".join(lines)
 
 
-def new_dialog_done(model: Model) -> str:
-    return f"↺ Новый диалог с {escape(model.name)}: прошлые сообщения забыты."
+def chat_opened(chat: Chat, model: Model, last_question: str | None, prefs: Prefs) -> str:
+    lines = [
+        f"<b>▸ Чат «{escape(chat_name(chat))}»</b>",
+        f"<i>{escape(model.label)} · {messages(chat.messages)} · {when(chat.updated)}</i>",
+    ]
+    if last_question:
+        lines += [
+            "",
+            f"<blockquote>Последний вопрос: «{escape(shorten(last_question))}»</blockquote>",
+        ]
+    lines.append("")
+    if last_question and prefs.memory:
+        lines.append(f"Продолжайте: {escape(model.name)} помнит эту переписку.")
+    else:
+        lines.append(f"Напишите сообщение, и {escape(model.name)} ответит.")
+    lines.append(_chat_bottom_hint())
+    return "\n".join(lines)
 
 
-def chat_already_open(model: Model) -> str:
+def chat_ended(chat: Chat, kept: bool) -> str:
+    if kept:
+        return f"■ Чат «{escape(chat_name(chat))}» закрыт и сохранён в «{MY_CHATS}»."
+    return "■ Чат закрыт. Он был пустым, поэтому в списке его нет."
+
+
+def chat_already_open(chat: Chat, model: Model) -> str:
     return (
-        f"▸ Чат с {escape(model.name)} уже открыт: просто пишите сообщение.\n"
-        f"Начать с чистого листа — «{NEW_DIALOG}» внизу."
+        f"▸ Чат «{escape(chat_name(chat))}» с {escape(model.name)} уже открыт: "
+        "просто пишите сообщение.\n"
+        f"Ещё один чат с этой моделью — «{NEW_DIALOG}» внизу."
     )
 
 
 def no_chat_text() -> str:
     return (
-        "Чат ещё не начат, поэтому сообщение никуда не ушло.\n\n"
-        f"Выберите модель и нажмите «{START_CHAT}» или начните с основной моделью ↓"
+        "Чат не открыт, поэтому сообщение никуда не ушло.\n\n"
+        "Продолжите прошлый чат, начните новый или выберите из списка ↓"
     )
 
 
-NO_CHAT_TO_CLOSE = "Чат и так не открыт. Начать: /chat или ⁂ Модели → модель → «▸ Начать чат»."
+NO_CHAT_TO_CLOSE = (
+    f"Чат и так не открыт. Начать: /chat или {MODELS_TITLE} → модель → «{START_CHAT}», "
+    f"продолжить старый — «{MY_CHATS}»."
+)
+
+
+def chats_text(chats: list[Chat], active: Chat | None, edit: bool) -> str:
+    if not chats:
+        return (
+            f"<b>{MY_CHATS}</b>\n\n"
+            "Чатов пока нет. Выберите модель и нажмите «▸ Начать чат» — "
+            "чат появится здесь, и к нему можно будет вернуться."
+        )
+    head = f"<b>{'✎' if edit else '☰'} Мои чаты</b> · {len(chats)}"
+    now = f"Открыт: {escape(chat_label(active))}" if active else "Сейчас ни один чат не открыт."
+    hint = (
+        "Выберите чат, чтобы переименовать или удалить ↓"
+        if edit
+        else "Нажмите на чат, чтобы перейти в него ↓"
+    )
+    return f"{head}\n{now}\n\n{hint}"
+
+
+def chat_info_text(chat: Chat, active_id: int, last_question: str | None) -> str:
+    model = MODELS.get(chat.model)
+    lines = [
+        f"<b>{escape(chat_label(chat))}</b>",
+        f"<i>{escape(model.name) if model else 'Модель больше недоступна'} · "
+        f"{messages(chat.messages)} · {when(chat.updated)}</i>",
+    ]
+    if chat.id == active_id:
+        lines.append("▸ Сейчас открыт")
+    if last_question:
+        lines += [
+            "",
+            f"<blockquote>Последний вопрос: «{escape(shorten(last_question))}»</blockquote>",
+        ]
+    return "\n".join(lines)
+
+
+def rename_text(chat: Chat) -> str:
+    return (
+        "<b>✎ Название чата</b>\n"
+        f"Сейчас: «{escape(chat_name(chat))}»\n\n"
+        f"Пришлите новое название одним сообщением, до {TITLE_LENGTH} символов."
+    )
+
+
+def title_too_long(length: int) -> str:
+    return (
+        f"Слишком длинно: {plural(length, 'символ', 'символа', 'символов')} "
+        f"из {TITLE_LENGTH}. Пришлите название покороче."
+    )
+
+
+TITLE_SAVED = "✓ Название сохранено"
+
+
+def delete_text(chat: Chat) -> str:
+    return (
+        f"<b>✕ Удалить чат «{escape(chat_name(chat))}»?</b>\n"
+        f"{messages(chat.messages).capitalize()} удалятся, вернуть их не получится."
+    )
+
+
+def chat_deleted(chat: Chat) -> str:
+    return f"✕ Открытый чат «{escape(chat_name(chat))}» удалён."
+
+
+CHAT_GONE = "Этого чата больше нет"
 
 
 def settings_text(prefs: Prefs, used_today: int) -> str:
@@ -215,7 +363,7 @@ def settings_text(prefs: Prefs, used_today: int) -> str:
 
 
 def picker_text() -> str:
-    return "<b>⛭ Основная модель</b>\nС ней начинается чат по /chat."
+    return "<b>⛭ Основная модель</b>\nС ней начинается новый чат по /chat."
 
 
 def role_text(prefs: Prefs, note: str = "") -> str:
@@ -266,17 +414,20 @@ def new_models_text(models: list[Model]) -> str:
 HELP = (
     "<b>ⓘ Помощь</b>\n\n"
     f"Чат с моделью начинается кнопкой «{START_CHAT}» в карточке модели или командой /chat. "
-    "Пока чат открыт, все ваши сообщения уходят этой модели.\n\n"
+    "Пока чат открыт, все ваши сообщения уходят этой модели. Чатов может быть сколько угодно: "
+    f"у каждого своя модель и переписка, переключаться — в «{MY_CHATS}».\n\n"
     "<blockquote>/start — главное меню\n"
+    "/chats — мои чаты и переключение\n"
     "/models — модели\n"
-    "/chat — начать чат с основной моделью\n"
-    "/new — новый диалог в открытом чате\n"
-    "/stop — завершить чат\n"
+    "/chat — новый чат с основной моделью\n"
+    "/new — ещё один чат с моделью открытого\n"
+    "/stop — закрыть чат (он сохранится)\n"
     "/settings — настройки</blockquote>"
 )
 
 ONLY_TEXT = "Пока понимаю только текст. Напишите вопрос словами."
 ROLE_ONLY_TEXT = "Пришлите инструкцию текстом или нажмите «← Отмена»."
+TITLE_ONLY_TEXT = "Пришлите название текстом или нажмите «← Отмена»."
 STALE_BUTTON = "Кнопка устарела, открываю меню"
 ROLE_SAVED = "✓ Своя роль сохранена"
 
@@ -285,7 +436,10 @@ ROLE_SAVED = "✓ Своя роль сохранена"
 
 
 def main_keyboard() -> dict:
-    return inline([button(MODELS_TITLE, "nav:models"), button(SETTINGS, "nav:settings")])
+    return inline(
+        [button(MODELS_TITLE, "nav:models"), button(SETTINGS, "nav:settings")],
+        [button(MY_CHATS, "nav:chats")],
+    )
 
 
 def models_keyboard() -> dict:
@@ -302,8 +456,8 @@ def other_keyboard() -> dict:
     return inline(*column(models), [button(BACK, "nav:models")])
 
 
-def card_keyboard(model: Model, prefs: Prefs, src: str) -> dict:
-    start = "↺ Начать чат заново" if prefs.chat == model.id else START_CHAT
+def card_keyboard(model: Model, prefs: Prefs, src: str, open_model: str = "") -> dict:
+    start = "▸ Ещё один чат с ней" if open_model == model.id else START_CHAT
     main = "✓ Основная модель" if prefs.model == model.id else "Сделать основной"
     back = "nav:other" if src == "other" else "nav:models"
     return inline(
@@ -313,21 +467,77 @@ def card_keyboard(model: Model, prefs: Prefs, src: str) -> dict:
     )
 
 
-def no_chat_keyboard(prefs: Prefs) -> dict:
-    return inline(
-        [button(f"▸ Чат с {MODELS[prefs.model].name}", f"chat:{prefs.model}")],
-        [button(MODELS_TITLE, "nav:models")],
-    )
+def no_chat_keyboard(prefs: Prefs, last: Chat | None = None) -> dict:
+    rows = []
+    if last and last.model in MODELS:
+        rows.append([button(f"▸ Продолжить «{shorten(chat_name(last), 28)}»", f"open:{last.id}:h")])
+    rows += [
+        [button(f"▸ Новый чат с {MODELS[prefs.model].name}", f"chat:{prefs.model}")],
+        [button(MY_CHATS, "nav:chats"), button(MODELS_TITLE, "nav:models")],
+    ]
+    return inline(*rows)
 
 
 def chat_keyboard(model: Model) -> dict:
     """Клавиатура внизу на время чата: в поле ввода видно, кому вы пишете."""
     return {
-        "keyboard": [[{"text": NEW_DIALOG}, {"text": END_CHAT}]],
+        "keyboard": [[{"text": CHATS}, {"text": NEW_DIALOG}], [{"text": END_CHAT}]],
         "resize_keyboard": True,
         "is_persistent": True,
         "input_field_placeholder": f"Сообщение для {model.name}"[:64],
     }
+
+
+def chats_keyboard(chats: list[Chat], active_id: int, page: int, edit: bool, prefs: Prefs) -> dict:
+    mode = "e" if edit else "s"
+    pages = max(1, -(-len(chats) // CHATS_PAGE))
+    page = min(max(page, 0), pages - 1)
+    rows = []
+    for chat in chats[page * CHATS_PAGE : (page + 1) * CHATS_PAGE]:
+        label = chat_label(chat) + ("  ✓" if chat.id == active_id else "")
+        rows.append([button(label, f"info:{chat.id}" if edit else f"open:{chat.id}:l")])
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(button("←", f"chats:{page - 1}:{mode}"))
+        nav.append(button(f"{page + 1} из {pages}", f"chats:{page}:{mode}"))
+        if page < pages - 1:
+            nav.append(button("→", f"chats:{page + 1}:{mode}"))
+        rows.append(nav)
+    if chats:
+        rows.append(
+            [
+                button("+ Новый чат", "newchat"),
+                button(
+                    "✓ Готово" if edit else "✎ Изменить", f"chats:{page}:{'s' if edit else 'e'}"
+                ),
+            ]
+        )
+    else:
+        rows.append([button(f"+ Новый чат с {MODELS[prefs.model].name}", "newchat")])
+        rows.append([button(MODELS_TITLE, "nav:models")])
+    rows.append([button(TO_MENU, "nav:main")])
+    return inline(*rows)
+
+
+def chat_info_keyboard(chat: Chat, active_id: int) -> dict:
+    go = "▸ Продолжить чат" if chat.id == active_id else "▸ Перейти в чат"
+    rows = []
+    if chat.model in MODELS:
+        rows.append([button(go, f"open:{chat.id}:i")])
+    rows += [
+        [button("✎ Переименовать", f"ren:{chat.id}"), button("✕ Удалить", f"del:{chat.id}")],
+        [button("← Все чаты", "chats:0:e")],
+    ]
+    return inline(*rows)
+
+
+def rename_keyboard(chat: Chat) -> dict:
+    return inline([button("← Отмена", f"info:{chat.id}")])
+
+
+def delete_keyboard(chat: Chat) -> dict:
+    return inline([button("✕ Да, удалить", f"delok:{chat.id}"), button("← Нет", f"info:{chat.id}")])
 
 
 def _toggle(key: str, prefs: Prefs) -> dict:

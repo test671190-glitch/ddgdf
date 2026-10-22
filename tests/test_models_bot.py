@@ -1,5 +1,6 @@
-"""Бот моделей (models_bot): меню, чат, настройки, тестовые ответы, оформление без
-эмодзи и мини-клиент Bot API. Апдейты — dict как от Telegram, API — фейковый."""
+"""Бот моделей (models_bot): меню, чаты и переключение между ними, настройки, тестовые
+ответы, оформление без эмодзи и мини-клиент Bot API. Апдейты — dict как от Telegram,
+API — фейковый."""
 
 import itertools
 import json
@@ -14,13 +15,14 @@ import pytest
 from models_bot import answers, notify, tg, ui
 from models_bot.catalog import CUSTOM_ROLE, MODELS, OTHER_MODELS, ROLES, TOP_MODELS
 from models_bot.handlers import SCREENS, Bot
-from models_bot.store import HISTORY_LIMIT, Prefs, Store, Turn
+from models_bot.store import HISTORY_LIMIT, MAX_CHATS, Chat, Prefs, Store, Turn
 
 _ids = itertools.count(1)
 
 # Все символы оформления. Ни у одного нет свойства Emoji в Unicode (emoji-data.txt),
 # поэтому Telegram не заменит их на цветные эмодзи
-DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎↺▸■→←↓↳✓·—«»…")
+DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■→←↓↳✓·—«»…")
+OPUS = MODELS["claude-opus-5-5"]
 
 
 class FakeApi:
@@ -70,9 +72,10 @@ def say(bot: Bot, *texts: str | None, chat_type: str = "private", **extra) -> No
         bot.handle({"update_id": next(_ids), "message": message})
 
 
-def press(bot: Bot, data: str, date: int = 1) -> None:
-    message = {"message_id": 7, "date": date, "chat": {"id": 42, "type": "private"}}
-    query = {"id": str(next(_ids)), "from": USER, "data": data, "message": message}
+def press(bot: Bot, data: str, date: int = 1, uid: int = 42) -> None:
+    message = {"message_id": 7, "date": date, "chat": {"id": uid, "type": "private"}}
+    user = {**USER, "id": uid}
+    query = {"id": str(next(_ids)), "from": user, "data": data, "message": message}
     bot.handle({"update_id": next(_ids), "callback_query": query})
 
 
@@ -87,40 +90,70 @@ def texts(markup: dict | None) -> list[str]:
     return [b["text"] for b in buttons(markup)]
 
 
+def data(markup: dict | None) -> list[str]:
+    return [b.get("callback_data", "") for b in buttons(markup)]
+
+
+def active(bot: Bot) -> Chat | None:
+    prefs = bot.store.get(42)
+    return bot.store.chat(prefs.active) if prefs.active else None
+
+
+def history(bot: Bot) -> list[Turn]:
+    chat = active(bot)
+    return bot.store.history(chat.id) if chat else []
+
+
 def all_screens() -> list[tuple[str, dict | None]]:
     prefs = Prefs()
-    in_chat = Prefs(chat="gpt-6-sol", role=CUSTOM_ROLE, role_text="Отвечай как юрист")
+    custom = Prefs(role=CUSTOM_ROLE, role_text="Отвечай как юрист", active=1)
+    chat = Chat(1, 42, "gpt-6-sol", "Как выбрать ноутбук", 3, int(time.time()))
+    empty = Chat(2, 42, "claude-opus-5-5", "", 0, int(time.time()) - 86400 * 3)
+    gone = Chat(3, 42, "grok-4.7", "Старый чат", 1, 0)
     model = MODELS[prefs.model]
     screens = [
         (ui.welcome("Neo", prefs), ui.main_keyboard()),
-        (ui.welcome("Neo", in_chat), None),
+        (ui.welcome("Neo", custom, chat), None),
         (ui.models_text(), ui.models_keyboard()),
         (ui.other_text(), ui.other_keyboard()),
-        (ui.model_card(model, in_chat), ui.card_keyboard(model, in_chat, "other")),
-        (ui.chat_started(model, in_chat, MODELS["gpt-6-sol"]), ui.chat_keyboard(model)),
-        (ui.chat_already_open(model), None),
-        (ui.chat_ended(model), None),
-        (ui.new_dialog_done(model), None),
-        (ui.no_chat_text(), ui.no_chat_keyboard(prefs)),
+        (
+            ui.model_card(model, custom, model.id),
+            ui.card_keyboard(model, custom, "other", model.id),
+        ),
+        (ui.chat_started(model, custom, chat, [empty]), ui.chat_keyboard(model)),
+        (ui.chat_opened(chat, model, "Вопрос <b>", custom), None),
+        (ui.chat_already_open(chat, model), None),
+        (ui.chat_ended(chat, True) + ui.chat_ended(empty, False), None),
+        (ui.no_chat_text(), ui.no_chat_keyboard(prefs, chat)),
         (ui.NO_CHAT_TO_CLOSE, None),
+        (
+            ui.chats_text([chat, empty, gone], chat, False),
+            ui.chats_keyboard([chat, empty, gone], 1, 0, False, prefs),
+        ),
+        (ui.chats_text([chat], None, True), ui.chats_keyboard([chat], 0, 0, True, prefs)),
+        (ui.chats_text([], None, False), ui.chats_keyboard([], 0, 0, False, prefs)),
+        (ui.chat_info_text(chat, 1, "Вопрос"), ui.chat_info_keyboard(chat, 1)),
+        (ui.chat_info_text(gone, 1, None), ui.chat_info_keyboard(gone, 1)),
+        (ui.rename_text(chat) + ui.title_too_long(41) + ui.TITLE_SAVED, ui.rename_keyboard(chat)),
+        (ui.delete_text(chat) + ui.chat_deleted(chat) + ui.CHAT_GONE, ui.delete_keyboard(chat)),
         (ui.settings_text(prefs, 1234), ui.settings_keyboard(prefs)),
         (ui.picker_text(), ui.picker_keyboard(prefs)),
-        (ui.role_text(in_chat, note=ui.ROLE_SAVED), ui.role_keyboard(in_chat)),
+        (ui.role_text(custom, note=ui.ROLE_SAVED), ui.role_keyboard(custom)),
         (ui.role_input_text(), ui.role_input_keyboard()),
         (ui.role_too_long(501), None),
         (ui.notify_text(), ui.notify_keyboard(prefs)),
         (ui.new_models_text(OTHER_MODELS), ui.new_models_keyboard(OTHER_MODELS)),
         (ui.HELP, None),
-        (ui.STALE_BUTTON + ui.ONLY_TEXT + ui.ROLE_ONLY_TEXT, None),
+        (ui.STALE_BUTTON + ui.ONLY_TEXT + ui.ROLE_ONLY_TEXT + ui.TITLE_ONLY_TEXT, None),
         (answers.limit_reached(), None),
         (answers.limit_notices(0, 16_000)[0], None),
         *((text, None) for text in SCREENS.values()),
     ]
-    history = [Turn("user", "Как дела?", 3), Turn("bot", "Хорошо", 2)]
+    turns = [Turn("user", "Как дела?", 3), Turn("bot", "Хорошо", 2)]
     for role in [*ROLES, CUSTOM_ROLE]:
         for lang in ("ru", "en"):
             p = Prefs(role=role, role_text="Будь краток", lang=lang)
-            reply = answers.compose(model, p, "Привет", history)
+            reply = answers.compose(model, p, "Привет", turns)
             screens.append((reply.html + answers.usage_line(reply, 100), None))
     return screens
 
@@ -128,13 +161,9 @@ def all_screens() -> list[tuple[str, dict | None]]:
 # Меню и оформление
 
 
-def test_main_menu_is_models_and_settings_in_one_row():
-    assert ui.main_keyboard()["inline_keyboard"] == [
-        [
-            {"text": "⁂ Модели", "callback_data": "nav:models"},
-            {"text": "⛭ Настройки", "callback_data": "nav:settings"},
-        ]
-    ]
+def test_main_menu_has_models_settings_and_chats():
+    assert texts(ui.main_keyboard()) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты"]
+    assert data(ui.main_keyboard()) == ["nav:models", "nav:settings", "nav:chats"]
 
 
 def test_models_menu_lists_claude_then_gpt_then_other():
@@ -159,9 +188,10 @@ def test_settings_lists_every_setting():
 
 def test_back_leads_one_screen_up():
     def back(markup: dict) -> str:
-        return buttons(markup)[-1]["callback_data"]
+        return data(markup)[-1]
 
     model, prefs = MODELS["gemini-4-argon"], Prefs()
+    chat = Chat(5, 42, model.id, "", 1, 0)
     assert back(ui.models_keyboard()) == "nav:main"
     assert back(ui.other_keyboard()) == "nav:models"
     assert back(ui.card_keyboard(model, prefs, "other")) == "nav:other"
@@ -171,6 +201,10 @@ def test_back_leads_one_screen_up():
     assert back(ui.role_keyboard(prefs)) == "nav:settings"
     assert back(ui.notify_keyboard(prefs)) == "nav:settings"
     assert back(ui.role_input_keyboard()) == "nav:role"
+    assert back(ui.chats_keyboard([chat], 0, 0, False, prefs)) == "nav:main"
+    assert back(ui.chat_info_keyboard(chat, 0)) == "chats:0:e"
+    assert back(ui.rename_keyboard(chat)) == "info:5"
+    assert back(ui.delete_keyboard(chat)) == "info:5"
 
 
 def test_other_models_are_gpt_6_1_and_gemini_only():
@@ -192,6 +226,8 @@ def test_callback_data_and_placeholder_fit_telegram_limits():
     for model in MODELS.values():
         markups += [ui.card_keyboard(model, Prefs(), "other"), ui.chat_keyboard(model)]
         assert len(ui.chat_keyboard(model)["input_field_placeholder"]) <= 64
+    big = Chat(10**12, 42, "gemini-3.1-pro-preview", "x" * 40, 1, 0)
+    markups += [ui.chat_info_keyboard(big, 0), ui.chats_keyboard([big] * 30, 0, 3, True, Prefs())]
     for markup in markups:
         for b in buttons(markup):
             assert len(b.get("callback_data", "").encode()) <= 64
@@ -203,6 +239,13 @@ def test_escape_and_plain_text():
     assert ui.role_too_long(501).startswith("Слишком длинно: 501 символ из 500")
 
 
+def test_when_is_moscow_time():
+    now = time.mktime((2026, 10, 22, 16, 0, 0, 0, 0, 0)) - time.timezone  # 16:00 UTC
+    assert ui.when(int(now - 3600), now) == "сегодня 18:00"
+    assert ui.when(int(now - 86400), now) == "вчера 19:00"
+    assert ui.when(int(now - 86400 * 3), now) == "19.10"
+
+
 # Хранилище
 
 
@@ -211,12 +254,14 @@ def test_store_keeps_prefs_and_forgets_removed_models(tmp_path):
     assert store.get(1) == Prefs()
     store.update(1, model="gemini-4-argon", lang="en", memory=False)
     assert Store(tmp_path / "s.db").get(1) == Prefs("gemini-4-argon", "en", memory=False)
-    store.update(1, model="grok-4.7", role="poet", chat="grok-4.7", awaiting="x")
+    store.update(1, model="grok-4.7", role="poet", awaiting="x")
     assert store.get(1) == Prefs(lang="en", memory=False)
+    store.update(1, awaiting="rename:12")
+    assert store.get(1).awaiting == "rename:12"
 
 
 def test_store_upgrades_old_settings_table(tmp_path):
-    """На сервере уже есть база прошлых версий: новые столбцы добавляются,
+    """На сервере уже есть база первой версии: новые столбцы добавляются,
     прежние значения остаются."""
     db = sqlite3.connect(tmp_path / "old.db")
     db.execute(
@@ -230,15 +275,65 @@ def test_store_upgrades_old_settings_table(tmp_path):
     assert store.users_with("notify_models") == [7]
 
 
-def test_history_keeps_only_last_messages(tmp_path):
+def test_store_moves_single_chat_into_chat_list(tmp_path):
+    """В прошлой версии чат был один: модель в prefs.chat, история без chat_id.
+    Он становится первым чатом в списке и остаётся открытым, с перепиской."""
+    db = sqlite3.connect(tmp_path / "v2.db")
+    db.executescript(
+        "CREATE TABLE prefs (user_id INTEGER PRIMARY KEY, model TEXT, chat TEXT);"
+        "INSERT INTO prefs VALUES (7, 'gpt-6-sol', 'gemini-4-argon');"
+        "INSERT INTO prefs VALUES (8, 'gpt-6-sol', '');"
+        "CREATE TABLE history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,"
+        " author TEXT, text TEXT, tokens INTEGER);"
+        "INSERT INTO history (user_id, author, text, tokens) VALUES (7, 'user', 'Как дела?', 3);"
+        "INSERT INTO history (user_id, author, text, tokens) VALUES (7, 'bot', 'Хорошо', 2);"
+        "INSERT INTO history (user_id, author, text, tokens) VALUES (8, 'user', 'Закрытый', 2);"
+    )
+    db.commit()
+    db.close()
+    store = Store(tmp_path / "v2.db")
+    prefs = store.get(7)
+    chat = store.chat(prefs.active)
+    assert (chat.user_id, chat.model, chat.title, chat.messages) == (
+        7,
+        "gemini-4-argon",
+        "Как дела?",
+        1,
+    )
+    assert [t.text for t in store.history(chat.id)] == ["Как дела?", "Хорошо"]
+    assert prefs.chat == ""
+    assert store.chats(8) == [] and store.get(8).active == 0
+    Store(tmp_path / "v2.db")  # повторный запуск ничего не дублирует
+    assert len(store.chats(7)) == 1
+
+
+def test_chats_keep_own_history_and_order(tmp_path):
     store = Store(tmp_path / "s.db")
+    a, _ = store.new_chat(1, "gpt-6-sol")
+    b, _ = store.new_chat(1, "gemini-4-argon")
+    store.remember(a.id, 1, Turn("user", "про A", 1))
+    store.note_question(a.id, "про A")
+    assert [c.id for c in store.chats(1)] == [a.id, b.id]  # последний вопрос — наверху
+    assert store.history(b.id) == []
+    assert store.chat(a.id).title == "про A"
+    store.note_question(a.id, "второй вопрос")
+    assert store.chat(a.id).title == "про A"  # название — из первого вопроса
     for i in range(HISTORY_LIMIT + 5):
-        store.remember(1, Turn("user", f"q{i}", 1))
-    history = store.history(1)
-    assert len(history) == HISTORY_LIMIT
-    assert history[-1].text == f"q{HISTORY_LIMIT + 4}"
-    store.forget(1)
-    assert store.history(1) == []
+        store.remember(a.id, 1, Turn("user", f"q{i}", 1))
+    assert len(store.history(a.id)) == HISTORY_LIMIT
+    store.delete_chat(a.id)
+    assert store.chat(a.id) is None and store.history(a.id) == []
+
+
+def test_too_many_chats_drop_the_oldest(tmp_path):
+    store = Store(tmp_path / "s.db")
+    first, _ = store.new_chat(1, "gpt-6-sol")
+    for _ in range(MAX_CHATS - 1):
+        _, dropped = store.new_chat(1, "gpt-6-sol")
+        assert dropped == []
+    _, dropped = store.new_chat(1, "gpt-6-sol")
+    assert [c.id for c in dropped] == [first.id]
+    assert len(store.chats(1)) == MAX_CHATS
 
 
 def test_spend_counts_tokens_for_today(tmp_path):
@@ -253,10 +348,12 @@ def test_store_is_safe_from_many_threads(tmp_path):
     store = Store(tmp_path / "s.db")
 
     def work(uid: int) -> None:
+        chat, _ = store.new_chat(uid, "gpt-6-sol")
         for _ in range(50):
             store.touch(uid)
             store.spend(uid, 1)
-            store.remember(uid, Turn("user", "q", 1))
+            store.remember(chat.id, uid, Turn("user", "q", 1))
+            store.note_question(chat.id, "q")
             store.update(uid, memory=not store.get(uid).memory)
 
     threads = [threading.Thread(target=work, args=(uid,)) for uid in range(8)]
@@ -265,6 +362,7 @@ def test_store_is_safe_from_many_threads(tmp_path):
     for t in threads:
         t.join()
     assert all(store.used_today(uid) == 50 for uid in range(8))
+    assert all(store.chats(uid)[0].messages == 50 for uid in range(8))
     assert sorted(store.users_with("notify_models")) == list(range(8))
 
 
@@ -296,6 +394,7 @@ def test_every_screen_and_card_opens(bot):
         ("/start", "⁂ Модели"),
         ("/models", "✻ Claude Opus 5.5"),
         ("/other", "⌬ GPT-6.1 Sol"),
+        ("/chats", "+ Новый чат с Claude Opus 5.5"),
         ("/settings", "Модель · Claude Opus 5.5"),
         ("/start@modelsbot", "⁂ Модели"),
         ("/unknown", "⁂ Модели"),
@@ -310,7 +409,7 @@ def test_stale_button_answers_and_opens_menu(bot):
     """Кнопки прошлых версий бота не должны крутить часики бесконечно."""
     press(bot, "pick:gpt-6-sol:-1")
     assert bot.api.named("answerCallbackQuery")[-1]["text"] == ui.STALE_BUTTON
-    assert texts(bot.api.last()["reply_markup"]) == ["⁂ Модели", "⛭ Настройки"]
+    assert texts(bot.api.last()["reply_markup"]) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты"]
 
 
 def test_old_message_screen_is_sent_anew(bot):
@@ -400,8 +499,7 @@ def test_chat_keyboard_buttons_are_not_taken_as_custom_role(bot):
     press(bot, f"role:{CUSTOM_ROLE}")
     say(bot, ui.END_CHAT)
     prefs = bot.store.get(42)
-    assert (prefs.role, prefs.awaiting, prefs.chat) == ("none", "", "")
-    assert bot.api.named("sendMessage")[-2]["text"] == ui.chat_ended(MODELS["claude-opus-5-5"])
+    assert (prefs.role, prefs.awaiting, prefs.active) == ("none", "", 0)
 
 
 def test_custom_role_too_long_or_not_text_stays_in_input(bot):
@@ -422,7 +520,11 @@ def test_text_without_chat_does_not_reach_model(bot):
     say(bot, "Привет")
     shown = bot.api.last()
     assert shown["text"] == ui.no_chat_text()
-    assert texts(shown["reply_markup"]) == ["▸ Чат с Claude Opus 5.5", "⁂ Модели"]
+    assert texts(shown["reply_markup"]) == [
+        "▸ Новый чат с Claude Opus 5.5",
+        "☰ Мои чаты",
+        "⁂ Модели",
+    ]
     assert not bot.api.named("sendChatAction")
     assert bot.store.used_today(42) == 0
 
@@ -434,12 +536,12 @@ def test_chat_starts_from_card_with_visible_keyboard(bot):
     card, started = bot.api.calls[-2][1], bot.api.calls[-1][1]
     # карточка обновилась: на ней видно, что чат открыт, «Назад» ведёт туда же
     assert "Сейчас открыт чат с этой моделью" in card["text"]
-    assert texts(card["reply_markup"]) == ["↺ Начать чат заново", "Сделать основной", "← Назад"]
-    assert buttons(card["reply_markup"])[-1]["callback_data"] == "nav:other"
-    assert started["text"].startswith("<b>▸ Чат начат · ⌬ GPT-6 Astra</b>")
-    assert texts(started["reply_markup"]) == ["↺ Новый диалог", "■ Завершить чат"]
+    assert texts(card["reply_markup"]) == ["▸ Ещё один чат с ней", "Сделать основной", "← Назад"]
+    assert data(card["reply_markup"])[-1] == "nav:other"
+    assert started["text"].startswith("<b>▸ Новый чат · ⌬ GPT-6 Astra</b>")
+    assert texts(started["reply_markup"]) == ["☰ Чаты", "↺ Новый диалог", "■ Завершить чат"]
     assert started["reply_markup"]["input_field_placeholder"] == "Сообщение для GPT-6 Astra"
-    assert bot.store.get(42).chat == "gpt-6-astra"
+    assert active(bot).model == "gpt-6-astra"
     say(bot, "Привет")
     answer = bot.api.last()
     assert answer["text"].startswith("<b>⌬ GPT-6 Astra</b> · тестовый ответ")
@@ -447,59 +549,186 @@ def test_chat_starts_from_card_with_visible_keyboard(bot):
     # клавиатура чата — под каждым ответом: если её скрыли, она вернётся
     assert answer["reply_markup"] == ui.chat_keyboard(MODELS["gpt-6-astra"])
     assert bot.api.named("sendChatAction")
+    assert active(bot).title == "Привет" and active(bot).messages == 1
 
 
 def test_welcome_and_card_show_open_chat(bot):
-    say(bot, "/chat", "/start")
-    assert "Открыт чат с <b>✻ Claude Opus 5.5</b>" in bot.api.last()["text"]
+    say(bot, "/chat", "Как выбрать ноутбук?", "/start")
+    assert "Открыт чат «Как выбрать ноутбук?» · ✻ Claude Opus 5.5" in bot.api.last()["text"]
     press(bot, "card:claude-opus-5-5:models")
     assert "Сейчас открыт чат с этой моделью" in bot.api.last()["text"]
-    assert texts(bot.api.last()["reply_markup"])[0] == "↺ Начать чат заново"
+    assert texts(bot.api.last()["reply_markup"])[0] == "▸ Ещё один чат с ней"
 
 
 def test_repeated_chat_command_keeps_the_dialog(bot):
-    """/chat при уже открытом чате с той же моделью не стирает переписку."""
+    """/chat при уже открытом чате с той же моделью не начинает новый."""
     say(bot, "/chat", "Первый вопрос", "/chat")
-    assert bot.api.sent()[-1] == ui.chat_already_open(MODELS["claude-opus-5-5"])
-    assert len(bot.store.history(42)) == 2
-    press(bot, "chat:claude-opus-5-5")  # «▸ Чат с …» под старой подсказкой
-    assert len(bot.store.history(42)) == 2
+    assert bot.api.sent()[-1] == ui.chat_already_open(active(bot), OPUS)
+    assert len(history(bot)) == 2
+    press(bot, "chat:claude-opus-5-5")  # «▸ Новый чат с …» под старой подсказкой
+    assert len(history(bot)) == 2
+    assert len(bot.store.chats(42)) == 1
 
 
-def test_switching_chat_model_says_so(bot):
-    say(bot, "/chat")
-    press(bot, "chat:gemini-4-argon:other")
-    assert "Чат с Claude Opus 5.5 завершён" in bot.api.last()["text"]
-    assert bot.store.get(42).chat == "gemini-4-argon"
+def test_switching_between_chats_keeps_each_dialog(bot):
+    """Главное: у каждого чата своя переписка, и между ними можно переключаться."""
+    say(bot, "/chat", "Вопрос про ноутбук")
+    laptop = active(bot)
+    press(bot, "chat:gemini-4-argon:other")  # новый чат с другой моделью
+    assert "Чат «Вопрос про ноутбук» сохранён в «☰ Мои чаты»" in bot.api.last()["text"]
+    say(bot, "Вопрос про отпуск")
+    trip = active(bot)
+    assert trip.id != laptop.id and trip.model == "gemini-4-argon"
+
+    say(bot, ui.CHATS)  # список чатов из клавиатуры внизу
+    shown = bot.api.last()
+    assert texts(shown["reply_markup"])[:2] == ["✧ Вопрос про отпуск  ✓", "✻ Вопрос про ноутбук"]
+    assert data(shown["reply_markup"])[1] == f"open:{laptop.id}:l"
+
+    press(bot, f"open:{laptop.id}:l")  # переключение одним нажатием
+    listed, opened = bot.api.calls[-2][1], bot.api.calls[-1][1]
+    assert texts(listed["reply_markup"])[1] == "✻ Вопрос про ноутбук  ✓"  # галочка переехала
+    assert opened["text"].startswith("<b>▸ Чат «Вопрос про ноутбук»</b>")
+    assert "Последний вопрос: «Вопрос про ноутбук»" in opened["text"]
+    assert opened["reply_markup"]["input_field_placeholder"] == "Сообщение для Claude Opus 5.5"
+    assert active(bot).id == laptop.id
+
+    say(bot, "А что с батареей?")
+    answer = bot.api.sent()[-1]
+    assert answer.startswith("<b>✻ Claude Opus 5.5</b>")
+    assert "вы спрашивали «Вопрос про ноутбук»" in answer  # помнит свою переписку
+    assert "отпуск" not in answer  # и не путает с чужой
+    assert [t.text for t in bot.store.history(trip.id) if t.author == "user"] == [
+        "Вопрос про отпуск"
+    ]
 
 
-def test_end_chat_removes_keyboard_and_stops_answers(bot):
+def test_new_dialog_starts_another_chat_and_keeps_the_old(bot):
+    say(bot, "/chat", "Как выбрать ноутбук?", ui.NEW_DIALOG)
+    assert "Чат «Как выбрать ноутбук?» сохранён" in bot.api.sent()[-1]
+    say(bot, "Привет")
+    assert "вы спрашивали" not in bot.api.sent()[-1]
+    first, second = sorted(bot.store.chats(42), key=lambda c: c.id)
+    assert (first.title, second.title) == ("Как выбрать ноутбук?", "Привет")
+    assert second.model == first.model == "claude-opus-5-5"
+
+
+def test_new_dialog_in_empty_chat_does_not_pile_up_chats(bot):
+    say(bot, "/chat", ui.NEW_DIALOG, ui.NEW_DIALOG)
+    assert len(bot.store.chats(42)) == 1
+    assert bot.api.sent()[-1] == ui.chat_already_open(active(bot), OPUS)
+
+
+def test_end_chat_keeps_it_and_continue_reopens(bot):
     say(bot, "/chat", "Вопрос", ui.END_CHAT)
     ended, menu = bot.api.named("sendMessage")[-2:]
-    assert ended["text"] == ui.chat_ended(MODELS["claude-opus-5-5"])
+    assert ended["text"] == ui.chat_ended(bot.store.chats(42)[0], True)
     assert ended["reply_markup"] == ui.REMOVE_KEYBOARD
-    assert texts(menu["reply_markup"]) == ["⁂ Модели", "⛭ Настройки"]
-    assert bot.store.get(42).chat == ""
-    assert bot.store.history(42) == []
-    say(bot, "Ещё вопрос")
-    assert bot.api.last()["text"] == ui.no_chat_text()
+    assert texts(menu["reply_markup"]) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты"]
+    assert bot.store.get(42).active == 0
+    chat = bot.store.chats(42)[0]
+    assert len(bot.store.history(chat.id)) == 2  # переписка сохранилась
+
+    say(bot, "Ещё вопрос")  # чат закрыт: сообщение никуда не ушло
+    hint = bot.api.last()
+    assert hint["text"] == ui.no_chat_text()
+    assert texts(hint["reply_markup"])[0] == "▸ Продолжить «Вопрос»"
+    press(bot, data(hint["reply_markup"])[0])
+    assert bot.store.get(42).active == chat.id
+    assert "Последний вопрос: «Вопрос»" in bot.api.last()["text"]
+
+
+def test_empty_chat_is_not_kept_on_end(bot):
+    say(bot, "/chat", "/stop")
+    assert bot.api.named("sendMessage")[-2]["text"] == ui.chat_ended(
+        Chat(0, 42, "", "", 0, 0), False
+    )
+    assert bot.store.chats(42) == []
 
 
 def test_chat_buttons_without_chat_remove_stale_keyboard(bot):
-    say(bot, ui.END_CHAT, ui.NEW_DIALOG, "/stop")
+    say(bot, ui.END_CHAT, ui.NEW_DIALOG, "/stop", "/new")
     for shown in bot.api.named("sendMessage"):
         assert shown["text"] == ui.NO_CHAT_TO_CLOSE
         assert shown["reply_markup"] == ui.REMOVE_KEYBOARD
 
 
-def test_memory_recalls_previous_question_until_new_dialog(bot):
-    say(bot, "/chat", "Как выбрать ноутбук?", "А для игр?")
-    assert "вы спрашивали «Как выбрать ноутбук?»" in bot.api.sent()[-1]
-    assert "в контексте 2 сообщения" in bot.api.sent()[-1]
-    say(bot, ui.NEW_DIALOG)
-    assert bot.api.sent()[-1] == ui.new_dialog_done(MODELS["claude-opus-5-5"])
+def test_rename_chat(bot):
+    say(bot, "/chat", "Вопрос")
+    chat = active(bot)
+    press(bot, "chats:0:e")
+    assert data(bot.api.last()["reply_markup"])[0] == f"info:{chat.id}"
+    press(bot, f"info:{chat.id}")
+    assert texts(bot.api.last()["reply_markup"]) == [
+        "▸ Продолжить чат",
+        "✎ Переименовать",
+        "✕ Удалить",
+        "← Все чаты",
+    ]
+    press(bot, f"ren:{chat.id}")
+    say(bot, "x" * 41)  # слишком длинно — остаёмся в вводе
+    assert "Слишком длинно: 41 символ" in bot.api.sent()[-1]
+    say(bot, "  Ноутбук   для работы ")
+    assert bot.store.chat(chat.id).title == "Ноутбук для работы"
+    assert bot.api.sent()[-1].startswith(ui.TITLE_SAVED)
+    assert bot.store.get(42).awaiting == ""
+    say(bot, "Ещё вопрос")  # дальше снова обычный чат
+    assert bot.api.sent()[-1].startswith("<b>✻ Claude Opus 5.5</b>")
+
+
+def test_rename_is_cancelled_by_any_button(bot):
+    say(bot, "/chat", "Вопрос")
+    chat = active(bot)
+    press(bot, f"ren:{chat.id}")
+    press(bot, f"info:{chat.id}")  # «← Отмена»
+    say(bot, "Новое название?")
+    assert bot.store.chat(chat.id).title == "Вопрос"
+
+
+def test_delete_chat_with_confirmation(bot):
+    say(bot, "/chat", "Первый", ui.NEW_DIALOG, "Второй")
+    first, second = sorted(bot.store.chats(42), key=lambda c: c.id)
+    press(bot, f"del:{first.id}")
+    assert texts(bot.api.last()["reply_markup"]) == ["✕ Да, удалить", "← Нет"]
+    assert bot.store.chat(first.id) is not None  # без подтверждения не удаляем
+    press(bot, f"delok:{first.id}")
+    assert bot.store.chat(first.id) is None
+    assert active(bot).id == second.id  # открытый чат не тронут
+    assert not bot.api.named("sendMessage")[-1]["reply_markup"] == ui.REMOVE_KEYBOARD
+
+
+def test_deleting_open_chat_closes_it(bot):
+    say(bot, "/chat", "Вопрос")
+    chat = active(bot)
+    press(bot, f"delok:{chat.id}")
+    assert bot.store.get(42).active == 0
+    last = bot.api.named("sendMessage")[-1]
+    assert last["text"] == ui.chat_deleted(chat)
+    assert last["reply_markup"] == ui.REMOVE_KEYBOARD
     say(bot, "Привет")
-    assert "вы спрашивали" not in bot.api.sent()[-1]
+    assert bot.api.last()["text"] == ui.no_chat_text()
+
+
+def test_other_users_chats_are_off_limits(bot):
+    say(bot, "/chat", "Секрет")
+    chat = active(bot)
+    for action in ("open", "info", "ren", "del", "delok"):
+        press(bot, f"{action}:{chat.id}", uid=777)
+        assert bot.api.named("answerCallbackQuery")[-1]["text"] == ui.CHAT_GONE
+    assert bot.store.chat(chat.id).title == "Секрет"
+    assert bot.store.get(777).active == 0
+
+
+def test_chats_list_pages(bot):
+    for i in range(ui.CHATS_PAGE + 2):
+        chat, _ = bot.store.new_chat(42, "gpt-6-sol")
+        bot.store.note_question(chat.id, f"вопрос {i}")
+    say(bot, "/chats")
+    first = bot.api.last()["reply_markup"]
+    assert "1 из 2" in texts(first) and "chats:1:s" in data(first)
+    press(bot, "chats:1:s")
+    second = bot.api.last()["reply_markup"]
+    assert len([d for d in data(second) if d.startswith("open:")]) == 2
 
 
 def test_memory_off_answers_each_question_alone(bot):
@@ -507,16 +736,8 @@ def test_memory_off_answers_each_question_alone(bot):
     say(bot, "/chat", "Первый", "Второй")
     assert "вы спрашивали" not in bot.api.sent()[-1]
     assert "каждый вопрос отдельно" in bot.api.sent()[-1]
-    assert bot.store.history(42) == []
-
-
-def test_turning_memory_off_forgets_the_dialog(bot):
-    say(bot, "/chat", "Секретный вопрос")
-    press(bot, "tgl:memory")
-    assert bot.store.history(42) == []
-    press(bot, "tgl:memory")
-    say(bot, "Привет")
-    assert "Секретный" not in bot.api.sent()[-1]
+    assert history(bot) == []
+    assert active(bot).messages == 2  # чат всё равно в списке, с названием
 
 
 def test_memory_grows_input_tokens(bot):
@@ -536,7 +757,8 @@ def test_undelivered_answer_costs_nothing(bot):
     with pytest.raises(tg.TelegramError):
         say(bot, "Привет")
     assert bot.store.used_today(42) == 0
-    assert bot.store.history(42) == []
+    assert history(bot) == []
+    assert active(bot).messages == 0
 
 
 def test_usage_and_detail_can_be_hidden(bot):
@@ -657,16 +879,18 @@ def fake_telegram(responses: list[bytes]):
 
 
 def http(body: dict, chunked: bool = False, close: bool = False) -> bytes:
-    data = json.dumps(body).encode()
+    payload = json.dumps(body).encode()
     head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
     if close:
         head += "Connection: close\r\n"
     if chunked:
-        half = len(data) // 2
-        parts = [data[:half], data[half:]]
-        payload = b"".join(f"{len(p):x}\r\n".encode() + p + b"\r\n" for p in parts) + b"0\r\n\r\n"
-        return (head + "Transfer-Encoding: chunked\r\n\r\n").encode() + payload
-    return (head + f"Content-Length: {len(data)}\r\n\r\n").encode() + data
+        half = len(payload) // 2
+        parts = [payload[:half], payload[half:]]
+        body_bytes = (
+            b"".join(f"{len(p):x}\r\n".encode() + p + b"\r\n" for p in parts) + b"0\r\n\r\n"
+        )
+        return (head + "Transfer-Encoding: chunked\r\n\r\n").encode() + body_bytes
+    return (head + f"Content-Length: {len(payload)}\r\n\r\n").encode() + payload
 
 
 def test_api_keeps_connection_and_reads_chunked_bodies():

@@ -1,10 +1,12 @@
-"""Данные пользователей в SQLite: настройки, история диалога и расход токенов.
+"""Данные пользователей в SQLite: настройки, чаты с их перепиской и расход токенов.
 
-Обработчики работают в нескольких потоках, поэтому одно соединение с базой
-защищено блокировкой.
+У пользователя может быть много чатов, у каждого своя модель и своя история;
+открыт — один (prefs.active). Обработчики работают в нескольких потоках, поэтому
+одно соединение с базой защищено блокировкой.
 """
 
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -14,10 +16,11 @@ from models_bot.catalog import CUSTOM_ROLE, DEFAULT_MODEL, MODELS, ROLES
 
 LANGS = {"ru": "русский", "en": "английский"}
 DETAILS = {"full": "подробные", "short": "краткие"}
-HISTORY_LIMIT = 20  # сообщений диалога на пользователя, более старые забываются
+HISTORY_LIMIT = 20  # сообщений в одном чате, более старые забываются
+MAX_CHATS = 50  # чатов на пользователя: при создании 51-го удаляется самый давний
 
 _PREFS = {
-    "model": DEFAULT_MODEL,
+    "model": DEFAULT_MODEL,  # основная модель: с ней /chat начинает новый чат
     "lang": "ru",
     "detail": "full",
     "role": "none",  # ключ из catalog.ROLES или CUSTOM_ROLE
@@ -26,10 +29,12 @@ _PREFS = {
     "show_usage": True,
     "notify_models": True,
     "notify_limit": True,
-    "chat": "",  # модель открытого чата; пусто — чат не начат
-    "awaiting": "",  # "role" — следующее сообщение станет своей ролью
+    "chat": "",  # прежняя версия: модель единственного чата; переносится в chats при запуске
+    "awaiting": "",  # "role" или "rename:<id чата>" — что станет следующим сообщением
     "blocked": False,  # пользователь заблокировал бота: уведомления ему не шлём
+    "active": 0,  # id открытого чата; 0 — чат не открыт
 }
+AWAITING = re.compile(r"(role|rename:\d+)?")
 
 
 class Prefs(namedtuple("Prefs", _PREFS, defaults=_PREFS.values())):
@@ -47,6 +52,9 @@ class Prefs(namedtuple("Prefs", _PREFS, defaults=_PREFS.values())):
 FIELDS = Prefs._fields
 DEFAULTS = Prefs()
 Turn = namedtuple("Turn", "author text tokens")  # author: user | bot
+# messages — сколько вопросов задано в чате; updated — время последнего, unix
+Chat = namedtuple("Chat", "id user_id model title messages updated")
+CHAT_COLUMNS = "id, user_id, model, title, messages, updated"
 
 
 def today() -> str:
@@ -68,19 +76,65 @@ class Store:
             # WAL — запись без блокировки чтения; кэш страниц поменьше: база крошечная
             "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -512;"
             "CREATE TABLE IF NOT EXISTS prefs (user_id INTEGER PRIMARY KEY);"
+            "CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " user_id INTEGER, model TEXT, title TEXT, messages INTEGER, updated INTEGER);"
+            "CREATE INDEX IF NOT EXISTS chats_user ON chats (user_id, updated);"
             "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " user_id INTEGER, author TEXT, text TEXT, tokens INTEGER);"
-            "CREATE INDEX IF NOT EXISTS history_user ON history (user_id, id);"
+            " user_id INTEGER, author TEXT, text TEXT, tokens INTEGER, chat_id INTEGER);"
             "CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, tokens INTEGER,"
             " PRIMARY KEY (user_id, day));"
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);"
         )
         # Новая настройка — новый столбец. У прежних строк в нём NULL: это значение по умолчанию
-        have = {row[1] for row in self.db.execute("PRAGMA table_info(prefs)")}
-        for name in FIELDS:
-            if name not in have:
-                self.db.execute(f"ALTER TABLE prefs ADD COLUMN {name}")
+        self._add_columns("prefs", FIELDS)
+        self._add_columns("history", ["chat_id"])
+        self.db.execute("CREATE INDEX IF NOT EXISTS history_chat ON history (chat_id, id)")
+        self._migrate_single_chat()
         self.db.commit()
+
+    def _add_columns(self, table: str, names) -> None:
+        have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+        for name in names:
+            if name not in have:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name}")
+
+    def _migrate_single_chat(self) -> None:
+        """В прежней версии чат у пользователя был один: модель — в prefs.chat, история —
+        без chat_id. Такой чат становится первым в списке и остаётся открытым."""
+        rows = self.db.execute(
+            "SELECT user_id, chat FROM prefs WHERE chat IS NOT NULL AND chat != ''"
+        ).fetchall()
+        for user_id, model in rows:
+            first = self.db.execute(
+                "SELECT text FROM history WHERE user_id = ? AND chat_id IS NULL"
+                " AND author = 'user' ORDER BY id LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            asked = self.db.execute(
+                "SELECT count(*) FROM history WHERE user_id = ? AND chat_id IS NULL"
+                " AND author = 'user'",
+                (user_id,),
+            ).fetchone()[0]
+            chat_id = self.db.execute(
+                "INSERT INTO chats (user_id, model, title, messages, updated)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    model,
+                    chat_title_from(first[0]) if first else "",
+                    asked,
+                    time.time(),
+                ),
+            ).lastrowid
+            self.db.execute(
+                "UPDATE history SET chat_id = ? WHERE user_id = ? AND chat_id IS NULL",
+                (chat_id, user_id),
+            )
+            self.db.execute(
+                "UPDATE prefs SET active = ?, chat = '' WHERE user_id = ?", (chat_id, user_id)
+            )
+        # Переписка без чата (чат был закрыт) никому больше не видна
+        self.db.execute("DELETE FROM history WHERE chat_id IS NULL")
 
     # Настройки
 
@@ -117,10 +171,10 @@ class Store:
             changes["detail"] = DEFAULTS.detail
         if prefs.role not in ROLES and not (prefs.role == CUSTOM_ROLE and prefs.role_text):
             changes["role"] = DEFAULTS.role
-        if prefs.chat and prefs.chat not in MODELS:
-            changes["chat"] = ""  # модель открытого чата убрали — чат закрыт
-        if prefs.awaiting not in ("", "role"):
+        if not isinstance(prefs.awaiting, str) or not AWAITING.fullmatch(prefs.awaiting):
             changes["awaiting"] = ""
+        if not isinstance(prefs.active, int):
+            changes["active"] = 0
         return prefs._replace(**changes)
 
     def update(self, user_id: int, **changes) -> Prefs:
@@ -151,32 +205,90 @@ class Store:
             if (default if value is None else bool(value)) and not blocked
         ]
 
-    # История диалога
+    # Чаты
 
-    def history(self, user_id: int) -> list[Turn]:
+    def new_chat(self, user_id: int, model: str) -> tuple[Chat, list[Chat]]:
+        """Создать чат. Возвращает его и чаты, удалённые сверх MAX_CHATS (самые давние)."""
+        now = time.time()
+        with self.lock:
+            chat_id = self.db.execute(
+                "INSERT INTO chats (user_id, model, title, messages, updated)"
+                " VALUES (?, ?, '', 0, ?)",
+                (user_id, model, now),
+            ).lastrowid
+            extra = self.db.execute(
+                f"SELECT {CHAT_COLUMNS} FROM chats WHERE user_id = ?"
+                " ORDER BY updated DESC, id DESC LIMIT -1 OFFSET ?",
+                (user_id, MAX_CHATS),
+            ).fetchall()
+            for row in extra:
+                self._delete(row[0])
+            self.db.commit()
+        return Chat(chat_id, user_id, model, "", 0, now), [Chat(*row) for row in extra]
+
+    def chat(self, chat_id: int) -> Chat | None:
+        with self.lock:
+            row = self.db.execute(
+                f"SELECT {CHAT_COLUMNS} FROM chats WHERE id = ?", (chat_id,)
+            ).fetchone()
+        return Chat(*row) if row else None
+
+    def chats(self, user_id: int) -> list[Chat]:
+        """Чаты пользователя, последние — первыми."""
         with self.lock:
             rows = self.db.execute(
-                "SELECT author, text, tokens FROM history WHERE user_id = ? ORDER BY id",
+                f"SELECT {CHAT_COLUMNS} FROM chats WHERE user_id = ?"
+                " ORDER BY updated DESC, id DESC",
                 (user_id,),
             ).fetchall()
-        return [Turn(*row) for row in rows]
+        return [Chat(*row) for row in rows]
 
-    def remember(self, user_id: int, *turns: Turn) -> None:
+    def rename_chat(self, chat_id: int, title: str) -> None:
         with self.lock:
-            self.db.executemany(
-                "INSERT INTO history (user_id, author, text, tokens) VALUES (?, ?, ?, ?)",
-                [(user_id, *t) for t in turns],
-            )
+            self.db.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
+            self.db.commit()
+
+    def note_question(self, chat_id: int, question: str) -> None:
+        """Вопрос задан: чат поднимается в списке, а первый вопрос становится названием."""
+        with self.lock:
             self.db.execute(
-                "DELETE FROM history WHERE user_id = ? AND id NOT IN "
-                "(SELECT id FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?)",
-                (user_id, user_id, HISTORY_LIMIT),
+                "UPDATE chats SET messages = messages + 1, updated = ?,"
+                " title = CASE WHEN title = '' THEN ? ELSE title END WHERE id = ?",
+                (time.time(), chat_title_from(question), chat_id),
             )
             self.db.commit()
 
-    def forget(self, user_id: int) -> None:
+    def delete_chat(self, chat_id: int) -> None:
         with self.lock:
-            self.db.execute("DELETE FROM history WHERE user_id = ?", (user_id,))
+            self._delete(chat_id)
+            self.db.commit()
+
+    def _delete(self, chat_id: int) -> None:
+        self.db.execute("DELETE FROM history WHERE chat_id = ?", (chat_id,))
+        self.db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+
+    # Переписка чата
+
+    def history(self, chat_id: int) -> list[Turn]:
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT author, text, tokens FROM history WHERE chat_id = ? ORDER BY id",
+                (chat_id,),
+            ).fetchall()
+        return [Turn(*row) for row in rows]
+
+    def remember(self, chat_id: int, user_id: int, *turns: Turn) -> None:
+        with self.lock:
+            self.db.executemany(
+                "INSERT INTO history (chat_id, user_id, author, text, tokens)"
+                " VALUES (?, ?, ?, ?, ?)",
+                [(chat_id, user_id, *t) for t in turns],
+            )
+            self.db.execute(
+                "DELETE FROM history WHERE chat_id = ? AND id NOT IN "
+                "(SELECT id FROM history WHERE chat_id = ? ORDER BY id DESC LIMIT ?)",
+                (chat_id, chat_id, HISTORY_LIMIT),
+            )
             self.db.commit()
 
     # Расход токенов за сутки (UTC)
@@ -217,3 +329,12 @@ class Store:
                 (key, value),
             )
             self.db.commit()
+
+
+TITLE_LENGTH = 40
+
+
+def chat_title_from(text: str) -> str:
+    """Название чата из первого вопроса: одна строка, до TITLE_LENGTH символов."""
+    text = " ".join(text.split())
+    return text if len(text) <= TITLE_LENGTH else text[: TITLE_LENGTH - 1].rstrip() + "…"
