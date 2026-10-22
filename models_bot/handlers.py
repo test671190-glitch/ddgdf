@@ -1,279 +1,291 @@
-import asyncio
+"""Обработка апдейтов: команды, кнопки, ввод своей роли и чат с тестовой моделью.
 
-from aiogram import F, Router
-from aiogram.enums import ChatAction
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+Бот работает только в личных сообщениях: в группе он молчит, чтобы не отвечать
+на каждое сообщение участников.
+"""
+
+import asyncio
+import logging
 
 from models_bot import answers, ui
-from models_bot.catalog import CUSTOM_ROLE, MODELS, ROLE_MAX_LENGTH, ROLES
-from models_bot.store import DETAILS, LANGS, Store, Turn, next_value
+from models_bot.catalog import CUSTOM_ROLE, MODELS, ROLE_MAX_LENGTH, ROLES, Model
+from models_bot.store import DETAILS, LANGS, Prefs, Store, Turn, next_value
+from models_bot.tg import Api, TelegramError
 
-router = Router()
-
-
-class RoleInput(StatesGroup):
-    text = State()
+log = logging.getLogger(__name__)
 
 
-async def track(handler, event, data):
-    """Запоминаем пользователя (ему придут уведомления) и выходим из ввода своей роли,
-    если вместо неё нажали кнопку или отправили команду."""
-    if event.from_user:
-        data["store"].touch(event.from_user.id)
-    state: FSMContext | None = data.get("state")
-    leaving = isinstance(event, CallbackQuery) or (event.text or "").startswith("/")
-    if state and leaving and data.get("raw_state"):
-        await state.clear()
-        data["raw_state"] = None  # фильтры состояний читают его, а не FSMContext
-    return await handler(event, data)
+class Bot:
+    def __init__(self, api: Api, store: Store) -> None:
+        self.api = api
+        self.store = store
 
+    # Отправка
 
-router.message.outer_middleware(track)
-router.callback_query.outer_middleware(track)
-
-
-async def show(call: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> None:
-    """Перерисовать экран в том же сообщении."""
-    if not isinstance(call.message, Message):
-        # Сообщение слишком старое, править его нельзя — присылаем экран заново
-        await call.bot.send_message(call.from_user.id, text, reply_markup=markup)
-        return
-    try:
-        await call.message.edit_text(text, reply_markup=markup)
-    except TelegramBadRequest as e:
-        # Повторное нажатие на ту же кнопку: экран уже такой
-        if "message is not modified" not in e.message:
-            raise
-
-
-# Команды
-
-
-@router.message(CommandStart())
-async def start(message: Message, store: Store) -> None:
-    prefs = store.get(message.from_user.id)
-    await message.answer(
-        ui.welcome(message.from_user.first_name, prefs), reply_markup=ui.main_keyboard()
-    )
-
-
-@router.message(Command("models"))
-async def models(message: Message) -> None:
-    await message.answer(ui.models_text(), reply_markup=ui.models_keyboard())
-
-
-@router.message(Command("other"))
-async def other(message: Message) -> None:
-    await message.answer(ui.other_text(), reply_markup=ui.other_keyboard())
-
-
-@router.message(Command("settings"))
-async def settings(message: Message, store: Store) -> None:
-    user_id = message.from_user.id
-    prefs = store.get(user_id)
-    await message.answer(
-        ui.settings_text(prefs, store.used_today(user_id)),
-        reply_markup=ui.settings_keyboard(prefs),
-    )
-
-
-@router.message(Command("new"))
-async def new_dialog(message: Message, store: Store) -> None:
-    store.forget(message.from_user.id)
-    await message.answer(ui.NEW_DIALOG_DONE)
-
-
-@router.message(Command("help"))
-async def help_(message: Message) -> None:
-    await message.answer(ui.HELP)
-
-
-# Экраны
-
-
-@router.callback_query(ui.Nav.filter(F.to == "main"))
-async def nav_main(call: CallbackQuery, store: Store) -> None:
-    prefs = store.get(call.from_user.id)
-    await show(call, ui.welcome(call.from_user.first_name, prefs), ui.main_keyboard())
-    await call.answer("← Главное меню")
-
-
-@router.callback_query(ui.Nav.filter(F.to == "models"))
-async def nav_models(call: CallbackQuery) -> None:
-    await show(call, ui.models_text(), ui.models_keyboard())
-    await call.answer(ui.MODELS_TITLE)
-
-
-@router.callback_query(ui.Nav.filter(F.to == "other"))
-async def nav_other(call: CallbackQuery) -> None:
-    await show(call, ui.other_text(), ui.other_keyboard())
-    await call.answer("→ Остальные модели")
-
-
-@router.callback_query(ui.Nav.filter(F.to == "settings"))
-async def nav_settings(call: CallbackQuery, store: Store) -> None:
-    user_id = call.from_user.id
-    prefs = store.get(user_id)
-    await show(
-        call, ui.settings_text(prefs, store.used_today(user_id)), ui.settings_keyboard(prefs)
-    )
-    await call.answer(ui.SETTINGS)
-
-
-@router.callback_query(ui.Nav.filter(F.to == "picker"))
-async def nav_picker(call: CallbackQuery, store: Store) -> None:
-    prefs = store.get(call.from_user.id)
-    await show(call, ui.picker_text(), ui.picker_keyboard(prefs))
-    await call.answer("⛭ Основная модель")
-
-
-@router.callback_query(ui.Nav.filter(F.to == "role"))
-async def nav_role(call: CallbackQuery, store: Store) -> None:
-    prefs = store.get(call.from_user.id)
-    await show(call, ui.role_text(prefs), ui.role_keyboard(prefs))
-    await call.answer("⛭ Роль")
-
-
-@router.callback_query(ui.Nav.filter(F.to == "notify"))
-async def nav_notify(call: CallbackQuery, store: Store) -> None:
-    prefs = store.get(call.from_user.id)
-    await show(call, ui.notify_text(), ui.notify_keyboard(prefs))
-    await call.answer("⛭ Уведомления")
-
-
-@router.callback_query(ui.Card.filter())
-async def card(call: CallbackQuery, callback_data: ui.Card, store: Store) -> None:
-    model = MODELS.get(callback_data.model_id)
-    if model is None:
-        await call.answer("Модель больше недоступна", show_alert=True)
-        return
-    prefs = store.get(call.from_user.id)
-    await show(call, ui.model_card(model, prefs), ui.card_keyboard(model, prefs, callback_data.src))
-    await call.answer(model.label)
-
-
-# Настройки
-
-
-@router.callback_query(ui.UseModel.filter())
-async def use_model(call: CallbackQuery, callback_data: ui.UseModel, store: Store) -> None:
-    model = MODELS.get(callback_data.model_id)
-    if model is None:
-        await call.answer("Модель больше недоступна", show_alert=True)
-        return
-    user_id = call.from_user.id
-    if store.get(user_id).model == model.id and callback_data.src != "picker":
-        await call.answer(f"✓ {model.name} уже основная")
-        return
-    prefs = store.update(user_id, model=model.id)
-    if callback_data.src == "picker":
-        text = ui.settings_text(prefs, store.used_today(user_id))
-        markup = ui.settings_keyboard(prefs)
-    else:
-        text = ui.model_card(model, prefs)
-        markup = ui.card_keyboard(model, prefs, callback_data.src)
-    await show(call, text, markup)
-    await call.answer(f"✓ Основная модель · {model.name}")
-
-
-@router.callback_query(ui.Toggle.filter(F.key.in_(ui.TOGGLES)))
-async def toggle(call: CallbackQuery, callback_data: ui.Toggle, store: Store) -> None:
-    user_id, key = call.from_user.id, callback_data.key
-    prefs = store.get(user_id)
-    if key == "lang":
-        value = next_value(LANGS, prefs.lang)
-    elif key == "detail":
-        value = next_value(DETAILS, prefs.detail)
-    else:
-        value = not getattr(prefs, key)
-    prefs = store.update(user_id, **{key: value})
-    if key.startswith("notify_"):
-        await show(call, ui.notify_text(), ui.notify_keyboard(prefs))
-    else:
-        text = ui.settings_text(prefs, store.used_today(user_id))
-        await show(call, text, ui.settings_keyboard(prefs))
-    await call.answer(ui.toggle_note(key, prefs))
-
-
-@router.callback_query(ui.SetRole.filter(F.key == CUSTOM_ROLE))
-async def custom_role(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(RoleInput.text)
-    await show(call, ui.role_input_text(), ui.role_input_keyboard())
-    await call.answer("✎ Своя роль")
-
-
-@router.callback_query(ui.SetRole.filter(F.key.in_(ROLES)))
-async def set_role(call: CallbackQuery, callback_data: ui.SetRole, store: Store) -> None:
-    prefs = store.update(call.from_user.id, role=callback_data.key)
-    await show(call, ui.role_text(prefs), ui.role_keyboard(prefs))
-    await call.answer(f"✓ Роль · {prefs.role_title}")
-
-
-@router.message(RoleInput.text, F.text)
-async def role_input(message: Message, state: FSMContext, store: Store) -> None:
-    text = message.text.strip()
-    if len(text) > ROLE_MAX_LENGTH:
-        await message.answer(ui.role_too_long(len(text)), reply_markup=ui.role_input_keyboard())
-        return
-    await state.clear()
-    prefs = store.update(message.from_user.id, role=CUSTOM_ROLE, role_text=text)
-    await message.answer(
-        ui.role_text(prefs, note="✓ Своя роль сохранена"), reply_markup=ui.role_keyboard(prefs)
-    )
-
-
-@router.message(RoleInput.text)
-async def role_input_not_text(message: Message) -> None:
-    await message.answer(ui.ROLE_ONLY_TEXT, reply_markup=ui.role_input_keyboard())
-
-
-# Диалог с моделью
-
-
-@router.callback_query(ui.NewDialog.filter())
-async def new_dialog_button(call: CallbackQuery, store: Store) -> None:
-    store.forget(call.from_user.id)
-    if isinstance(call.message, Message):
-        try:
-            await call.message.edit_reply_markup(reply_markup=None)
-        except TelegramBadRequest:
-            pass  # кнопку уже убрали — не важно
-        await call.message.answer(ui.NEW_DIALOG_DONE)
-    await call.answer("↺ Новый диалог")
-
-
-@router.message(F.text, ~F.text.startswith("/"))
-async def chat(message: Message, store: Store) -> None:
-    user_id = message.from_user.id
-    if store.used_today(user_id) >= answers.TEST_DAILY_LIMIT:
-        await message.answer(answers.limit_reached())
-        return
-    prefs = store.get(user_id)
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    await asyncio.sleep(answers.TYPING_SECONDS)
-    history = store.history(user_id) if prefs.memory else []
-    reply = answers.compose(MODELS[prefs.model], prefs, message.text, history)
-    before, after = store.spend(user_id, reply.total)
-    if prefs.memory:
-        store.remember(
-            user_id,
-            Turn("user", message.text, reply.question_tokens),
-            Turn("bot", answers.plain_text(reply.html), reply.output_tokens),
+    async def send(self, chat_id: int, text: str, markup: dict | None = None) -> None:
+        await self.api(
+            "sendMessage",
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+            link_preview_options={"is_disabled": True},
         )
-    text = reply.html
-    if prefs.show_usage:
-        text += "\n\n" + answers.usage_line(reply, after)
-    await message.answer(text, reply_markup=ui.answer_keyboard(prefs))
-    if prefs.notify_limit:
-        for notice in answers.limit_notices(before, after):
-            await message.answer(notice)
+
+    async def show(self, query: dict, text: str, markup: dict) -> None:
+        """Перерисовать экран в сообщении с кнопкой, а если его не править — прислать заново."""
+        message = query.get("message") or {}
+        if message.get("date"):  # у недоступного (слишком старого) сообщения date = 0
+            try:
+                await self.api(
+                    "editMessageText",
+                    chat_id=message["chat"]["id"],
+                    message_id=message["message_id"],
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                    link_preview_options={"is_disabled": True},
+                )
+                return
+            except TelegramError as e:
+                if "message is not modified" in e.description:
+                    return  # повторное нажатие на ту же кнопку
+                log.info("Экран не отредактирован, присылаю заново: %s", e)
+        await self.send(query["from"]["id"], text, markup)
+
+    async def toast(self, query: dict, text: str = "", alert: bool = False) -> None:
+        try:
+            await self.api(
+                "answerCallbackQuery", callback_query_id=query["id"], text=text, show_alert=alert
+            )
+        except TelegramError as e:
+            log.info("Ответ на кнопку не ушёл: %s", e)  # кнопку нажали слишком давно
+
+    # Вход
+
+    async def handle(self, update: dict) -> None:
+        if query := update.get("callback_query"):
+            await self.on_button(query)
+        elif message := update.get("message"):
+            await self.on_message(message)
+
+    async def on_message(self, message: dict) -> None:
+        user = message.get("from")
+        if not user or message["chat"]["type"] != "private":
+            return
+        uid = user["id"]
+        self.store.touch(uid)
+        prefs = self.store.get(uid)
+        text = message.get("text")
+        if text and text.startswith("/"):
+            if prefs.awaiting:
+                prefs = self.store.update(uid, awaiting="")  # команда отменяет ввод роли
+            command = text.split()[0][1:].split("@")[0].lower()
+            await self.command(command, uid, user, prefs)
+        elif prefs.awaiting == "role":
+            await self.role_input(uid, text)
+        elif text == ui.NEW_DIALOG:
+            await self.new_dialog(uid, prefs)
+        elif text == ui.END_CHAT:
+            await self.end_chat(uid, user, prefs)
+        elif not text:
+            await self.send(uid, ui.ONLY_TEXT)
+        elif prefs.chat:
+            await self.chat(uid, prefs, text)
+        else:
+            await self.send(uid, ui.no_chat_text(), ui.no_chat_keyboard(prefs))
+
+    async def command(self, command: str, uid: int, user: dict, prefs: Prefs) -> None:
+        if command == "start":
+            await self.send(uid, ui.welcome(user.get("first_name"), prefs), ui.main_keyboard())
+        elif command == "models":
+            await self.send(uid, ui.models_text(), ui.models_keyboard())
+        elif command == "other":
+            await self.send(uid, ui.other_text(), ui.other_keyboard())
+        elif command == "chat":
+            await self.start_chat(uid, MODELS[prefs.model], prefs)
+        elif command == "new":
+            await self.new_dialog(uid, prefs)
+        elif command == "stop":
+            await self.end_chat(uid, user, prefs)
+        elif command == "settings":
+            await self.send(
+                uid,
+                ui.settings_text(prefs, self.store.used_today(uid)),
+                ui.settings_keyboard(prefs),
+            )
+        elif command == "help":
+            await self.send(uid, ui.HELP)
+        else:
+            await self.send(uid, ui.welcome(user.get("first_name"), prefs), ui.main_keyboard())
+
+    async def on_button(self, query: dict) -> None:
+        message = query.get("message") or {}
+        if message.get("chat", {}).get("type", "private") != "private":
+            await self.toast(query)
+            return
+        user = query["from"]
+        uid = user["id"]
+        self.store.touch(uid)
+        prefs = self.store.get(uid)
+        if prefs.awaiting:
+            prefs = self.store.update(uid, awaiting="")  # любая кнопка отменяет ввод роли
+        kind, _, arg = (query.get("data") or "").partition(":")
+        if kind == "nav" and arg in SCREENS:
+            await self.toast(query, SCREENS[arg])
+            await self.screen(query, arg, prefs)
+        elif kind in ("card", "use", "chat"):
+            model_id, _, src = arg.partition(":")
+            model = MODELS.get(model_id)
+            if model is None:
+                await self.toast(query, "Этой модели больше нет", alert=True)
+                await self.screen(query, "models", prefs)
+            elif kind == "card":
+                await self.toast(query, model.label)
+                await self.show(
+                    query, ui.model_card(model, prefs), ui.card_keyboard(model, prefs, src)
+                )
+            elif kind == "use":
+                await self.use_model(query, model, prefs, src)
+            else:
+                await self.toast(query, f"▸ Чат с {model.name}")
+                await self.start_chat(uid, model, prefs)
+        elif kind == "tgl" and arg in ui.TOGGLES:
+            await self.toggle(query, arg, prefs)
+        elif kind == "role" and (arg in ROLES or arg == CUSTOM_ROLE):
+            await self.set_role(query, arg)
+        elif kind == "dlg":  # кнопка под ответами из прошлой версии бота
+            await self.toast(query)
+            await self.new_dialog(uid, prefs)
+        else:
+            await self.toast(query, ui.STALE_BUTTON)
+            await self.screen(query, "main", prefs)
+
+    # Экраны
+
+    async def screen(self, query: dict, name: str, prefs: Prefs) -> None:
+        uid = query["from"]["id"]
+        if name == "main":
+            text, markup = ui.welcome(query["from"].get("first_name"), prefs), ui.main_keyboard()
+        elif name == "models":
+            text, markup = ui.models_text(), ui.models_keyboard()
+        elif name == "other":
+            text, markup = ui.other_text(), ui.other_keyboard()
+        elif name == "settings":
+            text = ui.settings_text(prefs, self.store.used_today(uid))
+            markup = ui.settings_keyboard(prefs)
+        elif name == "picker":
+            text, markup = ui.picker_text(), ui.picker_keyboard(prefs)
+        elif name == "role":
+            text, markup = ui.role_text(prefs), ui.role_keyboard(prefs)
+        else:
+            text, markup = ui.notify_text(), ui.notify_keyboard(prefs)
+        await self.show(query, text, markup)
+
+    # Настройки
+
+    async def use_model(self, query: dict, model: Model, prefs: Prefs, src: str) -> None:
+        uid = query["from"]["id"]
+        if prefs.model == model.id and src != "picker":
+            await self.toast(query, f"✓ {model.name} уже основная")
+            return
+        prefs = self.store.update(uid, model=model.id)
+        await self.toast(query, f"✓ Основная модель · {model.name}")
+        if src == "picker":
+            await self.screen(query, "settings", prefs)
+        else:
+            await self.show(query, ui.model_card(model, prefs), ui.card_keyboard(model, prefs, src))
+
+    async def toggle(self, query: dict, key: str, prefs: Prefs) -> None:
+        if key == "lang":
+            value = next_value(LANGS, prefs.lang)
+        elif key == "detail":
+            value = next_value(DETAILS, prefs.detail)
+        else:
+            value = not getattr(prefs, key)
+        prefs = self.store.update(query["from"]["id"], **{key: value})
+        await self.toast(query, ui.toggle_note(key, prefs))
+        await self.screen(query, "notify" if key.startswith("notify_") else "settings", prefs)
+
+    async def set_role(self, query: dict, key: str) -> None:
+        uid = query["from"]["id"]
+        if key == CUSTOM_ROLE:
+            self.store.update(uid, awaiting="role")
+            await self.toast(query, "✎ Своя роль")
+            await self.show(query, ui.role_input_text(), ui.role_input_keyboard())
+            return
+        prefs = self.store.update(uid, role=key)
+        await self.toast(query, f"✓ Роль · {prefs.role_title}")
+        await self.screen(query, "role", prefs)
+
+    async def role_input(self, uid: int, text: str | None) -> None:
+        if not text:
+            await self.send(uid, ui.ROLE_ONLY_TEXT, ui.role_input_keyboard())
+            return
+        text = text.strip()
+        if len(text) > ROLE_MAX_LENGTH:
+            await self.send(uid, ui.role_too_long(len(text)), ui.role_input_keyboard())
+            return
+        prefs = self.store.update(uid, role=CUSTOM_ROLE, role_text=text, awaiting="")
+        await self.send(uid, ui.role_text(prefs, note=ui.ROLE_SAVED), ui.role_keyboard(prefs))
+
+    # Чат
+
+    async def start_chat(self, uid: int, model: Model, prefs: Prefs) -> None:
+        previous = MODELS.get(prefs.chat)
+        prefs = self.store.update(uid, chat=model.id)
+        self.store.forget(uid)
+        await self.send(uid, ui.chat_started(model, prefs, previous), ui.chat_keyboard(model))
+
+    async def new_dialog(self, uid: int, prefs: Prefs) -> None:
+        if not prefs.chat:
+            await self.send(uid, ui.NO_CHAT_TO_CLOSE, ui.REMOVE_KEYBOARD)
+            return
+        self.store.forget(uid)
+        await self.send(uid, ui.new_dialog_done(MODELS[prefs.chat]))
+
+    async def end_chat(self, uid: int, user: dict, prefs: Prefs) -> None:
+        if not prefs.chat:
+            await self.send(uid, ui.NO_CHAT_TO_CLOSE, ui.REMOVE_KEYBOARD)
+            return
+        model = MODELS[prefs.chat]
+        prefs = self.store.update(uid, chat="")
+        self.store.forget(uid)
+        await self.send(uid, ui.chat_ended(model), ui.REMOVE_KEYBOARD)
+        await self.send(uid, ui.welcome(user.get("first_name"), prefs), ui.main_keyboard())
+
+    async def chat(self, uid: int, prefs: Prefs, text: str) -> None:
+        if self.store.used_today(uid) >= answers.TEST_DAILY_LIMIT:
+            await self.send(uid, answers.limit_reached())
+            return
+        model = MODELS[prefs.chat]
+        await self.api("sendChatAction", chat_id=uid, action="typing")
+        await asyncio.sleep(answers.TYPING_SECONDS)
+        history = self.store.history(uid) if prefs.memory else []
+        reply = answers.compose(model, prefs, text, history)
+        before, after = self.store.spend(uid, reply.total)
+        if prefs.memory:
+            self.store.remember(
+                uid,
+                Turn("user", text, reply.question_tokens),
+                Turn("bot", answers.plain_text(reply.html), reply.output_tokens),
+            )
+        html = reply.html
+        if prefs.show_usage:
+            html += "\n\n" + answers.usage_line(reply, after)
+        await self.send(uid, html)
+        if prefs.notify_limit:
+            for notice in answers.limit_notices(before, after):
+                await self.send(uid, notice)
 
 
-@router.message()
-async def fallback(message: Message) -> None:
-    text = ui.ONLY_TEXT if not message.text else "Выберите раздел ↓"
-    await message.answer(text, reply_markup=ui.main_keyboard())
+# Экран → всплывающая подпись при переходе
+SCREENS = {
+    "main": "← Главное меню",
+    "models": ui.MODELS_TITLE,
+    "other": "→ Остальные модели",
+    "settings": ui.SETTINGS,
+    "picker": "⛭ Основная модель",
+    "role": "⛭ Роль",
+    "notify": "⛭ Уведомления",
+}

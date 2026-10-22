@@ -1,20 +1,23 @@
-"""Тексты и кнопки.
+"""Тексты и кнопки. Кнопки — обычные dict в формате Bot API.
 
 Экраны: главное меню (Модели, Настройки) → Модели (Claude, GPT) → Остальные модели;
-у каждой модели — карточка. В настройках — модель, роль, память, расход, уведомления,
-язык и подробность ответов. Кнопка «Назад» ведёт на экран выше.
+у каждой модели — карточка с кнопкой «▸ Начать чат». В настройках — модель, роль,
+память, расход, уведомления, язык и подробность ответов. «Назад» ведёт на экран выше.
+
+Чат начинается только кнопкой «▸ Начать чат» (или /chat): бот присылает сообщение
+о начале чата и клавиатуру внизу — «↺ Новый диалог» и «■ Завершить чат», а в поле
+ввода видно, какой модели вы пишете. Без открытого чата сообщения моделям не уходят.
+
+Данные кнопок: nav:<экран>, card:<модель>:<откуда>, use:<модель>:<откуда>,
+chat:<модель>, tgl:<настройка>, role:<роль>.
 
 Оформление монохромное: только символы Unicode без эмодзи-представления, тонкие
 и одного веса. Знаки разработчиков — в catalog.VENDOR_MARKS, остальное здесь:
-⁂ модели, ⛭ настройки, ✎ своя роль, ↺ новый диалог, ⓘ уведомление,
-→ ← ↓ ↳ переходы, ✓ выбранное, · разделитель.
+⁂ модели, ⛭ настройки, ▸ начать чат, ■ завершить, ↺ новый диалог, ✎ своя роль,
+ⓘ уведомление, → ← ↓ ↳ переходы, ✓ выбранное, · разделитель.
 """
 
 from html import escape
-
-from aiogram.filters.callback_data import CallbackData
-from aiogram.types import BotCommand, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from models_bot.answers import TEST_DAILY_LIMIT, WARN_SHARE, num
 from models_bot.catalog import (
@@ -31,16 +34,20 @@ from models_bot.store import DETAILS, LANGS, Prefs
 BRAND = "unknown shop"
 MODELS_TITLE = "⁂ Модели"
 SETTINGS = "⛭ Настройки"
+START_CHAT = "▸ Начать чат"
 NEW_DIALOG = "↺ Новый диалог"
+END_CHAT = "■ Завершить чат"
 TO_MENU = "← В меню"
 BACK = "← Назад"
 
 COMMANDS = [
-    BotCommand(command="start", description="⌂ Главное меню"),
-    BotCommand(command="models", description="⁂ Модели"),
-    BotCommand(command="settings", description="⛭ Настройки"),
-    BotCommand(command="new", description="↺ Новый диалог"),
-    BotCommand(command="help", description="ⓘ Помощь"),
+    {"command": "start", "description": "⌂ Главное меню"},
+    {"command": "models", "description": "⁂ Модели"},
+    {"command": "chat", "description": "▸ Начать чат с основной моделью"},
+    {"command": "new", "description": "↺ Новый диалог"},
+    {"command": "stop", "description": "■ Завершить чат"},
+    {"command": "settings", "description": "⛭ Настройки"},
+    {"command": "help", "description": "ⓘ Помощь"},
 ]
 
 # Переключатели в настройках: подпись на кнопке
@@ -53,31 +60,23 @@ TOGGLES = {
     "notify_limit": "Окончание лимита",
 }
 
-
-class Nav(CallbackData, prefix="nav"):
-    to: str  # main | models | other | settings | picker | role | notify
+REMOVE_KEYBOARD = {"remove_keyboard": True}
 
 
-class Card(CallbackData, prefix="card"):
-    model_id: str
-    src: str = "models"  # models | other — куда ведёт «Назад»
+def button(text: str, data: str) -> dict:
+    return {"text": text, "callback_data": data}
 
 
-class UseModel(CallbackData, prefix="use"):
-    model_id: str
-    src: str = "models"  # models | other — из карточки, picker — из настроек
+def inline(*rows: list[dict]) -> dict:
+    return {"inline_keyboard": [row for row in rows if row]}
 
 
-class Toggle(CallbackData, prefix="tgl"):
-    key: str  # ключ из TOGGLES
+def column(buttons: list[dict]) -> list[list[dict]]:
+    return [[b] for b in buttons]
 
 
-class SetRole(CallbackData, prefix="role"):
-    key: str  # ключ из catalog.ROLES или CUSTOM_ROLE
-
-
-class NewDialog(CallbackData, prefix="dlg"):
-    pass
+def pairs(buttons: list[dict]) -> list[list[dict]]:
+    return [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
 
 
 def on(flag: bool) -> str:
@@ -105,25 +104,41 @@ def notify_summary(prefs: Prefs) -> str:
     return " и ".join(parts) if parts else "выключены"
 
 
+def memory_summary(prefs: Prefs) -> str:
+    return "помню переписку" if prefs.memory else "каждый вопрос отдельно"
+
+
 # Тексты
 
 
 def welcome(first_name: str | None, prefs: Prefs) -> str:
     name = escape(first_name or "друг")
+    if prefs.chat:
+        status = (
+            f"Открыт чат с <b>{escape(MODELS[prefs.chat].label)}</b>: просто пишите сообщения.\n"
+            f"Закончить — «{END_CHAT}» внизу или /stop."
+        )
+    else:
+        status = (
+            f"Чтобы начать чат: {MODELS_TITLE} → выберите модель → «{START_CHAT}».\n"
+            f"Или сразу /chat — чат с основной моделью {escape(MODELS[prefs.model].name)}."
+        )
     return (
         f"<b>{BRAND}</b> · нейросети в одном окне\n"
         f"Привет, {name}.\n\n"
         "<blockquote>✻ Claude — код, тексты, анализ\n"
         "⌬ GPT — универсальные задачи\n"
         "✧ Gemini — линейка Google</blockquote>\n\n"
-        f"Основная модель · <b>{escape(MODELS[prefs.model].name)}</b>\n"
-        "Напишите вопрос, и она ответит, или выберите раздел ↓\n\n"
+        f"{status}\n\n"
         "<i>Тестовый режим: модели отвечают заготовками.</i>"
     )
 
 
 def models_text() -> str:
-    return f"<b>{MODELS_TITLE}</b>\nТоп нейросетей: Claude и GPT\n\nВыберите модель ↓"
+    return (
+        f"<b>{MODELS_TITLE}</b>\nТоп нейросетей: Claude и GPT\n\n"
+        f"Выберите модель ↓ В её карточке — «{START_CHAT}»."
+    )
 
 
 def other_text() -> str:
@@ -139,9 +154,44 @@ def model_card(model: Model, prefs: Prefs) -> str:
         "",
         f"ID · <code>{escape(model.id)}</code>",
     ]
+    if prefs.chat == model.id:
+        lines.append("▸ Сейчас открыт чат с этой моделью")
     if prefs.model == model.id:
         lines.append("✓ Основная модель")
     return "\n".join(lines)
+
+
+def chat_started(model: Model, prefs: Prefs, previous: Model | None = None) -> str:
+    head = f"<b>▸ Чат начат · {escape(model.label)}</b>"
+    if previous and previous.id != model.id:
+        head += f"\n<i>Чат с {escape(previous.name)} завершён.</i>"
+    return (
+        f"{head}\n\n"
+        f"<blockquote>Роль — {escape(prefs.role_title.lower())}\n"
+        f"Память — {memory_summary(prefs)}\n"
+        f"Ответы — {DETAILS[prefs.detail]}, {LANGS[prefs.lang]}</blockquote>\n\n"
+        f"Напишите сообщение, и {escape(model.name)} ответит.\n"
+        f"Внизу: «{NEW_DIALOG}» очищает переписку, «{END_CHAT}» закрывает чат."
+    )
+
+
+def chat_ended(model: Model | None) -> str:
+    name = f" с {escape(model.name)}" if model else ""
+    return f"■ Чат{name} завершён. Переписка удалена."
+
+
+def new_dialog_done(model: Model) -> str:
+    return f"↺ Новый диалог с {escape(model.name)}: прошлые сообщения забыты."
+
+
+def no_chat_text() -> str:
+    return (
+        "Чат ещё не начат, поэтому сообщение никуда не ушло.\n\n"
+        f"Выберите модель и нажмите «{START_CHAT}» или начните с основной моделью ↓"
+    )
+
+
+NO_CHAT_TO_CLOSE = "Чат и так не открыт. Начать: /chat или ⁂ Модели → модель → «▸ Начать чат»."
 
 
 def settings_text(prefs: Prefs, used_today: int) -> str:
@@ -155,12 +205,12 @@ def settings_text(prefs: Prefs, used_today: int) -> str:
         f"Язык ответов — {LANGS[prefs.lang]}\n"
         f"Ответы — {DETAILS[prefs.detail]}</blockquote>\n\n"
         f"Сегодня израсходовано {num(used_today)} из {num(TEST_DAILY_LIMIT)} тестовых токенов.\n"
-        "Нажмите на пункт, чтобы изменить."
+        "Нажмите на пункт, чтобы изменить. Роль, память и ответы сразу действуют и в открытом чате."
     )
 
 
 def picker_text() -> str:
-    return "<b>⛭ Основная модель</b>\nОна отвечает на ваши сообщения."
+    return "<b>⛭ Основная модель</b>\nС ней начинается чат по /chat."
 
 
 def role_text(prefs: Prefs, note: str = "") -> str:
@@ -210,132 +260,129 @@ def new_models_text(models: list[Model]) -> str:
 
 HELP = (
     "<b>ⓘ Помощь</b>\n\n"
-    "Напишите вопрос, и основная модель ответит.\n\n"
+    f"Чат с моделью начинается кнопкой «{START_CHAT}» в карточке модели или командой /chat. "
+    "Пока чат открыт, все ваши сообщения уходят этой модели.\n\n"
     "<blockquote>/start — главное меню\n"
     "/models — модели\n"
-    "/settings — настройки\n"
-    "/new — новый диалог</blockquote>"
+    "/chat — начать чат с основной моделью\n"
+    "/new — новый диалог в открытом чате\n"
+    "/stop — завершить чат\n"
+    "/settings — настройки</blockquote>"
 )
 
-NEW_DIALOG_DONE = "↺ Новый диалог: прошлые сообщения забыты."
-ONLY_TEXT = "Пока понимаю только текст. Напишите вопрос или выберите раздел ↓"
+ONLY_TEXT = "Пока понимаю только текст. Напишите вопрос словами."
 ROLE_ONLY_TEXT = "Пришлите инструкцию текстом или нажмите «← Отмена»."
+STALE_BUTTON = "Кнопка устарела, открываю меню"
+ROLE_SAVED = "✓ Своя роль сохранена"
 
 
 # Кнопки
 
 
-def main_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text=MODELS_TITLE, callback_data=Nav(to="models"))
-    builder.button(text=SETTINGS, callback_data=Nav(to="settings"))
-    builder.adjust(2)
-    return builder.as_markup()
+def main_keyboard() -> dict:
+    return inline([button(MODELS_TITLE, "nav:models"), button(SETTINGS, "nav:settings")])
 
 
-def models_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for m in TOP_MODELS:
-        builder.button(text=m.label, callback_data=Card(model_id=m.id))
-    builder.button(text="Остальные модели →", callback_data=Nav(to="other"))
-    builder.button(text=TO_MENU, callback_data=Nav(to="main"))
-    builder.adjust(1)
-    return builder.as_markup()
-
-
-def other_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for m in OTHER_MODELS:
-        builder.button(text=m.label, callback_data=Card(model_id=m.id, src="other"))
-    builder.button(text=BACK, callback_data=Nav(to="models"))
-    builder.adjust(1)
-    return builder.as_markup()
-
-
-def card_keyboard(model: Model, prefs: Prefs, src: str) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(
-        text="✓ Основная модель" if prefs.model == model.id else "Сделать основной",
-        callback_data=UseModel(model_id=model.id, src=src),
-    )
-    builder.button(text=BACK, callback_data=Nav(to="other" if src == "other" else "models"))
-    builder.adjust(1)
-    return builder.as_markup()
-
-
-def _toggle(builder: InlineKeyboardBuilder, key: str, prefs: Prefs) -> None:
-    builder.button(
-        text=f"{TOGGLES[key]} · {toggle_value(key, prefs)}", callback_data=Toggle(key=key)
+def models_keyboard() -> dict:
+    models = [button(m.label, f"card:{m.id}:models") for m in TOP_MODELS]
+    return inline(
+        *column(models),
+        [button("Остальные модели →", "nav:other")],
+        [button(TO_MENU, "nav:main")],
     )
 
 
-def settings_keyboard(prefs: Prefs) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text=f"Модель · {MODELS[prefs.model].name}", callback_data=Nav(to="picker"))
-    builder.button(text=f"Роль · {prefs.role_title}", callback_data=Nav(to="role"))
-    _toggle(builder, "memory", prefs)
-    _toggle(builder, "show_usage", prefs)
-    builder.button(text="Уведомления →", callback_data=Nav(to="notify"))
-    _toggle(builder, "lang", prefs)
-    _toggle(builder, "detail", prefs)
-    builder.button(text=TO_MENU, callback_data=Nav(to="main"))
-    builder.adjust(1)
-    return builder.as_markup()
+def other_keyboard() -> dict:
+    models = [button(m.label, f"card:{m.id}:other") for m in OTHER_MODELS]
+    return inline(*column(models), [button(BACK, "nav:models")])
 
 
-def picker_keyboard(prefs: Prefs) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for m in TOP_MODELS + OTHER_MODELS:
-        text = f"{m.label}  ✓" if m.id == prefs.model else m.label
-        builder.button(text=text, callback_data=UseModel(model_id=m.id, src="picker"))
-    builder.button(text=BACK, callback_data=Nav(to="settings"))
-    builder.adjust(1)
-    return builder.as_markup()
-
-
-def role_keyboard(prefs: Prefs) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for role in ROLES.values():
-        text = f"{role.title}  ✓" if role.key == prefs.role else role.title
-        builder.button(text=text, callback_data=SetRole(key=role.key))
-    custom = "✎ Своя роль"
-    builder.button(
-        text=f"{custom}  ✓" if prefs.role == CUSTOM_ROLE else custom,
-        callback_data=SetRole(key=CUSTOM_ROLE),
+def card_keyboard(model: Model, prefs: Prefs, src: str) -> dict:
+    start = "↺ Начать чат заново" if prefs.chat == model.id else START_CHAT
+    main = "✓ Основная модель" if prefs.model == model.id else "Сделать основной"
+    back = "nav:other" if src == "other" else "nav:models"
+    return inline(
+        [button(start, f"chat:{model.id}")],
+        [button(main, f"use:{model.id}:{src}")],
+        [button(BACK, back)],
     )
-    builder.button(text=BACK, callback_data=Nav(to="settings"))
-    builder.adjust(*([2] * (len(ROLES) // 2)), 1)
-    return builder.as_markup()
 
 
-def role_input_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="← Отмена", callback_data=Nav(to="role"))
-    return builder.as_markup()
+def no_chat_keyboard(prefs: Prefs) -> dict:
+    return inline(
+        [button(f"▸ Чат с {MODELS[prefs.model].name}", f"chat:{prefs.model}")],
+        [button(MODELS_TITLE, "nav:models")],
+    )
 
 
-def notify_keyboard(prefs: Prefs) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    _toggle(builder, "notify_models", prefs)
-    _toggle(builder, "notify_limit", prefs)
-    builder.button(text=BACK, callback_data=Nav(to="settings"))
-    builder.adjust(1)
-    return builder.as_markup()
+def chat_keyboard(model: Model) -> dict:
+    """Клавиатура внизу на время чата: в поле ввода видно, кому вы пишете."""
+    return {
+        "keyboard": [[{"text": NEW_DIALOG}, {"text": END_CHAT}]],
+        "resize_keyboard": True,
+        "is_persistent": True,
+        "input_field_placeholder": f"Сообщение для {model.name}"[:64],
+    }
 
 
-def answer_keyboard(prefs: Prefs) -> InlineKeyboardMarkup | None:
-    """Под ответом модели: начать новый диалог (только когда память включена)."""
-    if not prefs.memory:
-        return None
-    builder = InlineKeyboardBuilder()
-    builder.button(text=NEW_DIALOG, callback_data=NewDialog())
-    return builder.as_markup()
+def _toggle(key: str, prefs: Prefs) -> dict:
+    return button(f"{TOGGLES[key]} · {toggle_value(key, prefs)}", f"tgl:{key}")
 
 
-def new_models_keyboard(models: list[Model]) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for m in models[:8]:
-        src = "models" if m in TOP_MODELS else "other"
-        builder.button(text=m.label, callback_data=Card(model_id=m.id, src=src))
-    builder.adjust(1)
-    return builder.as_markup()
+def settings_keyboard(prefs: Prefs) -> dict:
+    return inline(
+        *column(
+            [
+                button(f"Модель · {MODELS[prefs.model].name}", "nav:picker"),
+                button(f"Роль · {prefs.role_title}", "nav:role"),
+                _toggle("memory", prefs),
+                _toggle("show_usage", prefs),
+                button("Уведомления →", "nav:notify"),
+                _toggle("lang", prefs),
+                _toggle("detail", prefs),
+                button(TO_MENU, "nav:main"),
+            ]
+        )
+    )
+
+
+def picker_keyboard(prefs: Prefs) -> dict:
+    models = [
+        button(f"{m.label}  ✓" if m.id == prefs.model else m.label, f"use:{m.id}:picker")
+        for m in TOP_MODELS + OTHER_MODELS
+    ]
+    return inline(*column(models), [button(BACK, "nav:settings")])
+
+
+def role_keyboard(prefs: Prefs) -> dict:
+    roles = [
+        button(f"{r.title}  ✓" if r.key == prefs.role else r.title, f"role:{r.key}")
+        for r in ROLES.values()
+    ]
+    custom = "✎ Своя роль" + ("  ✓" if prefs.role == CUSTOM_ROLE else "")
+    return inline(
+        *pairs(roles), [button(custom, f"role:{CUSTOM_ROLE}")], [button(BACK, "nav:settings")]
+    )
+
+
+def role_input_keyboard() -> dict:
+    return inline([button("← Отмена", "nav:role")])
+
+
+def notify_keyboard(prefs: Prefs) -> dict:
+    return inline(
+        [_toggle("notify_models", prefs)],
+        [_toggle("notify_limit", prefs)],
+        [button(BACK, "nav:settings")],
+    )
+
+
+def new_models_keyboard(models: list[Model]) -> dict:
+    return inline(
+        *column(
+            [
+                button(m.label, f"card:{m.id}:{'models' if m in TOP_MODELS else 'other'}")
+                for m in models[:8]
+            ]
+        )
+    )

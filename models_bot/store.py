@@ -23,6 +23,8 @@ class Prefs:
     show_usage: bool = True
     notify_models: bool = True
     notify_limit: bool = True
+    chat: str = ""  # модель открытого чата; пусто — чат не начат
+    awaiting: str = ""  # "role" — следующее сообщение станет своей ролью
 
     @property
     def role_prompt(self) -> str:
@@ -57,7 +59,10 @@ class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
+        self.known: set[int] = set()  # кого уже записали в prefs: touch без лишней записи
         self.db.executescript(
+            # WAL — запись без блокировки чтения; кэш страниц поменьше: база крошечная
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -512;"
             "CREATE TABLE IF NOT EXISTS prefs (user_id INTEGER PRIMARY KEY);"
             "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT,"
             " user_id INTEGER, author TEXT, text TEXT, tokens INTEGER);"
@@ -77,8 +82,11 @@ class Store:
 
     def touch(self, user_id: int) -> None:
         """Запомнить пользователя: ему придут уведомления, даже если он ничего не менял."""
+        if user_id in self.known:
+            return
         self.db.execute("INSERT OR IGNORE INTO prefs (user_id) VALUES (?)", (user_id,))
         self.db.commit()
+        self.known.add(user_id)
 
     def get(self, user_id: int) -> Prefs:
         row = self.db.execute(
@@ -103,6 +111,10 @@ class Store:
             changes["detail"] = DEFAULTS.detail
         if prefs.role not in ROLES and not (prefs.role == CUSTOM_ROLE and prefs.role_text):
             changes["role"] = DEFAULTS.role
+        if prefs.chat and prefs.chat not in MODELS:
+            changes["chat"] = ""  # модель открытого чата убрали — чат закрыт
+        if prefs.awaiting not in ("", "role"):
+            changes["awaiting"] = ""
         return replace(prefs, **changes)
 
     def update(self, user_id: int, **changes) -> Prefs:

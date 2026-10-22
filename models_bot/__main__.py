@@ -1,21 +1,20 @@
-"""Каркас бота: меню топ-нейросетей.
+"""Бот нейросетей (тестовый режим: модели отвечают заготовками).
 
-Запуск: python -m models_bot (токен — BOT_TOKEN в models_bot/.env).
+Запуск: python -m models_bot. Токен — BOT_TOKEN в models_bot/.env.
+Зависимостей нет: только стандартная библиотека Python 3.11+.
 """
 
 import asyncio
 import logging
 import os
+import signal
 from pathlib import Path
 
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-
 from models_bot import ui
-from models_bot.handlers import router
+from models_bot.handlers import Bot
 from models_bot.notify import announce_new_models
 from models_bot.store import Store
+from models_bot.tg import Api, Serial, poll
 
 
 def load_env(path: Path) -> None:
@@ -38,17 +37,29 @@ async def main() -> None:
     # На сервере systemd выдаёт каталог /var/lib/models-bot (StateDirectory в юните)
     data_dir = Path(os.environ.get("STATE_DIRECTORY") or Path(__file__).with_name("data"))
     store = Store(data_dir / "settings.db")
-    bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher(store=store)
-    dp.include_router(router)
-    await bot.set_my_commands(ui.COMMANDS)
-    await bot.delete_webhook(drop_pending_updates=True)
+    api = Api(token)
+    me = await api("getMe")
+    await api("setMyCommands", commands=ui.COMMANDS)
+    # Вебхук снимаем, но апдейты не выбрасываем: сообщения, пришедшие во время
+    # перезапуска, бот обработает, а не потеряет
+    await api("deleteWebhook", drop_pending_updates=False)
+    logging.info("Бот @%s запущен", me["username"])
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):
+            pass  # Windows: остановка по Ctrl+C
     # Рассылка о новых моделях идёт параллельно, бот отвечает сразу
-    announce = asyncio.create_task(announce_new_models(bot, store))
+    announce = asyncio.create_task(announce_new_models(api, store))
     try:
-        await dp.start_polling(bot)
+        await poll(api, Serial(Bot(api, store).handle), stop)
     finally:
         announce.cancel()
+        api.close()
+        logging.info("Бот остановлен")
 
 
 if __name__ == "__main__":
