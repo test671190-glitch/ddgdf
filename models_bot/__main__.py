@@ -1,4 +1,4 @@
-﻿"""Каркас бота: меню топ-нейросетей.
+"""Каркас бота: меню топ-нейросетей.
 
 Запуск: python -m models_bot (токен — BOT_TOKEN в models_bot/.env).
 """
@@ -14,6 +14,7 @@ from aiogram.enums import ParseMode
 
 from models_bot import ui
 from models_bot.handlers import router
+from models_bot.store import Store
 
 
 def load_env(path: Path) -> None:
@@ -33,8 +34,11 @@ async def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
+    # На сервере systemd выдаёт каталог /var/lib/models-bot (StateDirectory в юните)
+    data_dir = Path(os.environ.get("STATE_DIRECTORY") or Path(__file__).with_name("data"))
+    store = Store(data_dir / "settings.db")
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher()
+    dp = Dispatcher(store=store)
     dp.include_router(router)
     await bot.set_my_commands(ui.COMMANDS)
     await bot.delete_webhook(drop_pending_updates=True)

@@ -1,7 +1,11 @@
-﻿"""Модели в меню бота: сначала топ (Claude, затем GPT),
-остальное — за кнопкой «Остальные модели»."""
+"""Модели в меню бота: сначала топ (Claude, затем GPT), остальное — за кнопкой
+«Остальные модели»."""
 
 from dataclasses import dataclass
+
+# Знак разработчика — монохромный символ, похожий на его логотип:
+# ✻ — искра Claude, ⌬ — шестигранник OpenAI, ✧ — четырёхлучевая звезда Gemini
+VENDOR_MARKS = {"Anthropic": "✻", "OpenAI": "⌬", "Google": "✧"}
 
 
 @dataclass(frozen=True)
@@ -9,7 +13,15 @@ class Model:
     id: str
     name: str
     vendor: str
-    about: str = ""
+    about: str
+
+    @property
+    def mark(self) -> str:
+        return VENDOR_MARKS.get(self.vendor, "·")
+
+    @property
+    def label(self) -> str:
+        return f"{self.mark} {self.name}"
 
 
 TOP_MODELS = [
@@ -32,20 +44,13 @@ TOP_MODELS = [
 ]
 
 OTHER_MODELS = [
-    Model("claude-fable-5-1", "Claude Fable 5.1", "Anthropic"),
-    Model("claude-opus-5", "Claude Opus 5", "Anthropic"),
-    Model("claude-opus-4-8", "Claude Opus 4.8", "Anthropic"),
-    Model("gpt-6.1-sol", "GPT-6.1 Sol", "OpenAI"),
-    Model("gpt-6-sol-pro", "GPT-6 Sol Pro", "OpenAI"),
-    Model("gpt-5.6-sol", "GPT-5.6 Sol", "OpenAI"),
-    Model("gemini-4-argon", "Gemini 4 Argon", "Google"),
-    Model("gemini-3.1-pro-preview", "Gemini 3.1 Pro", "Google"),
-    Model("gemini-3.8-flash", "Gemini 3.8 Flash", "Google"),
-    Model("grok-4.7", "Grok 4.7", "xAI"),
-    Model("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", "DeepSeek"),
-    Model("qwen3.8-max-prime", "Qwen3.8 Max Prime", "Qwen"),
-    Model("glm-5.3-prime", "GLM 5.3 Prime", "Z.ai"),
-    Model("mistral-large-4-0", "Mistral Large 4", "Mistral"),
+    Model("gpt-6.1-sol", "GPT-6.1 Sol", "OpenAI", "Обновлённая версия GPT-6 Sol."),
+    Model("gemini-4-argon", "Gemini 4 Argon", "Google", "Новое поколение Gemini."),
+    Model("gemini-3.1-pro-preview", "Gemini 3.1 Pro", "Google", "Gemini для сложных задач."),
+    Model("gemini-3.8-flash", "Gemini 3.8 Flash", "Google", "Быстрая модель Gemini."),
+    Model("gemini-3.7-flash", "Gemini 3.7 Flash", "Google", "Быстрая модель Gemini."),
+    Model("gemini-3.6-flash", "Gemini 3.6 Flash", "Google", "Быстрая модель Gemini."),
 ]
 
 MODELS = {m.id: m for m in TOP_MODELS + OTHER_MODELS}
+DEFAULT_MODEL = TOP_MODELS[0].id

@@ -9,6 +9,9 @@ WorkingDirectory=/opt/models-bot
 ExecStart=/opt/models-bot/.venv/bin/python -m models_bot
 Restart=always
 RestartSec=5
+# /var/lib/models-bot: база настроек пользователей
+StateDirectory=models-bot
+StateDirectoryMode=0750
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
