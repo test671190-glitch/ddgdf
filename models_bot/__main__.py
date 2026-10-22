@@ -14,6 +14,7 @@ from aiogram.enums import ParseMode
 
 from models_bot import ui
 from models_bot.handlers import router
+from models_bot.notify import announce_new_models
 from models_bot.store import Store
 
 
@@ -42,7 +43,12 @@ async def main() -> None:
     dp.include_router(router)
     await bot.set_my_commands(ui.COMMANDS)
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    # Рассылка о новых моделях идёт параллельно, бот отвечает сразу
+    announce = asyncio.create_task(announce_new_models(bot, store))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        announce.cancel()
 
 
 if __name__ == "__main__":
