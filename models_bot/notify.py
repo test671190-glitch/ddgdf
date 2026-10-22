@@ -1,22 +1,19 @@
 """Уведомления о новых моделях: при запуске бот сравнивает каталог с прошлым запуском
-и пишет тем, у кого включено «Новые модели»."""
+и пишет тем, у кого включено «Новые модели». Работает в отдельном потоке."""
 
-import asyncio
 import json
-import logging
+import time
 
-from models_bot import ui
+from models_bot import log, ui
 from models_bot.catalog import MODELS
 from models_bot.store import Store
-from models_bot.tg import Api, TelegramError
+from models_bot.tg import NETWORK_ERRORS, Api, TelegramError
 
 KNOWN_MODELS = "known_models"
 SEND_PAUSE = 0.05  # не упираться в лимит Telegram на рассылку
 
-log = logging.getLogger(__name__)
 
-
-async def announce_new_models(api: Api, store: Store) -> int:
+def announce_new_models(api: Api, store: Store) -> int:
     """Возвращает, скольким пользователям ушло уведомление."""
     known = store.meta(KNOWN_MODELS)
     # Сначала запоминаем каталог: при перезапусках по кругу уведомление не повторится
@@ -30,7 +27,7 @@ async def announce_new_models(api: Api, store: Store) -> int:
     sent = 0
     for user_id in store.users_with("notify_models"):
         try:
-            await api(
+            api(
                 "sendMessage",
                 chat_id=user_id,
                 text=ui.new_models_text(new),
@@ -38,8 +35,12 @@ async def announce_new_models(api: Api, store: Store) -> int:
                 reply_markup=ui.new_models_keyboard(new),
             )
             sent += 1
-        except (TelegramError, OSError, TimeoutError) as e:
+        except TelegramError as e:
+            if e.code == 403:  # бота заблокировали: больше не пишем, пока сам не напишет
+                store.update(user_id, blocked=True)
             log.info("Уведомление о новых моделях не дошло до %s: %s", user_id, e)
-        await asyncio.sleep(SEND_PAUSE)
+        except NETWORK_ERRORS as e:
+            log.info("Уведомление о новых моделях не дошло до %s: %r", user_id, e)
+        time.sleep(SEND_PAUSE)
     log.info("Новые модели %s: уведомлено %s", [m.id for m in new], sent)
     return sent

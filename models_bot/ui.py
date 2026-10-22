@@ -9,7 +9,7 @@
 ввода видно, какой модели вы пишете. Без открытого чата сообщения моделям не уходят.
 
 Данные кнопок: nav:<экран>, card:<модель>:<откуда>, use:<модель>:<откуда>,
-chat:<модель>, tgl:<настройка>, role:<роль>.
+chat:<модель>[:<откуда>], tgl:<настройка>, role:<роль>.
 
 Оформление монохромное: только символы Unicode без эмодзи-представления, тонкие
 и одного веса. Знаки разработчиков — в catalog.VENDOR_MARKS, остальное здесь:
@@ -17,9 +17,7 @@ chat:<модель>, tgl:<настройка>, role:<роль>.
 ⓘ уведомление, → ← ↓ ↳ переходы, ✓ выбранное, · разделитель.
 """
 
-from html import escape
-
-from models_bot.answers import TEST_DAILY_LIMIT, WARN_SHARE, num
+from models_bot.answers import TEST_DAILY_LIMIT, WARN_SHARE, escape, num, plural
 from models_bot.catalog import (
     CUSTOM_ROLE,
     MODELS,
@@ -184,6 +182,13 @@ def new_dialog_done(model: Model) -> str:
     return f"↺ Новый диалог с {escape(model.name)}: прошлые сообщения забыты."
 
 
+def chat_already_open(model: Model) -> str:
+    return (
+        f"▸ Чат с {escape(model.name)} уже открыт: просто пишите сообщение.\n"
+        f"Начать с чистого листа — «{NEW_DIALOG}» внизу."
+    )
+
+
 def no_chat_text() -> str:
     return (
         "Чат ещё не начат, поэтому сообщение никуда не ушло.\n\n"
@@ -234,8 +239,8 @@ def role_input_text() -> str:
 
 def role_too_long(length: int) -> str:
     return (
-        f"Слишком длинно: {length} символов из {ROLE_MAX_LENGTH}. "
-        "Сократите инструкцию и пришлите ещё раз."
+        f"Слишком длинно: {plural(length, 'символ', 'символа', 'символов')} "
+        f"из {ROLE_MAX_LENGTH}. Сократите инструкцию и пришлите ещё раз."
     )
 
 
@@ -302,7 +307,7 @@ def card_keyboard(model: Model, prefs: Prefs, src: str) -> dict:
     main = "✓ Основная модель" if prefs.model == model.id else "Сделать основной"
     back = "nav:other" if src == "other" else "nav:models"
     return inline(
-        [button(start, f"chat:{model.id}")],
+        [button(start, f"chat:{model.id}:{src or 'models'}")],
         [button(main, f"use:{model.id}:{src}")],
         [button(BACK, back)],
     )

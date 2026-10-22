@@ -4,21 +4,19 @@
 Сначала топ (Claude, затем GPT), остальное — за кнопкой «Остальные модели».
 Новую модель достаточно добавить в список: после перезапуска бот сообщит о ней
 тем, у кого включены уведомления о новых моделях.
+
+Записи — namedtuple, а не dataclass: модуль dataclasses стоит ~2 МБ памяти.
 """
 
-from dataclasses import dataclass
+from collections import namedtuple
 
 # Знак разработчика — монохромный символ, похожий на его логотип:
 # ✻ — искра Claude, ⌬ — шестигранник OpenAI, ✧ — четырёхлучевая звезда Gemini
 VENDOR_MARKS = {"Anthropic": "✻", "OpenAI": "⌬", "Google": "✧"}
 
 
-@dataclass(frozen=True)
-class Model:
-    id: str
-    name: str
-    vendor: str
-    about: str
+class Model(namedtuple("Model", "id name vendor about")):
+    __slots__ = ()
 
     @property
     def mark(self) -> str:
@@ -61,13 +59,7 @@ MODELS = {m.id: m for m in TOP_MODELS + OTHER_MODELS}
 DEFAULT_MODEL = TOP_MODELS[0].id
 
 
-@dataclass(frozen=True)
-class Role:
-    key: str
-    title: str
-    title_en: str
-    prompt: str
-
+Role = namedtuple("Role", "key title title_en prompt")
 
 ROLES = {
     r.key: r

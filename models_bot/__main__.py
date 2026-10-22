@@ -4,63 +4,53 @@
 Зависимостей нет: только стандартная библиотека Python 3.11+.
 """
 
-import asyncio
-import logging
 import os
-import signal
-from pathlib import Path
+import threading
 
-from models_bot import ui
+from models_bot import log, ui
 from models_bot.handlers import Bot
 from models_bot.notify import announce_new_models
 from models_bot.store import Store
 from models_bot.tg import Api, Serial, poll
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 
-def load_env(path: Path) -> None:
-    if not path.exists():
+
+def load_env(path: str) -> None:
+    if not os.path.exists(path):
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        key, sep, value = line.strip().partition("=")
-        if sep and not key.startswith("#"):
-            os.environ.setdefault(key.strip(), value.strip())
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            key, sep, value = line.strip().partition("=")
+            if sep and not key.startswith("#"):
+                os.environ.setdefault(key.strip(), value.strip())
 
 
-async def main() -> None:
-    load_env(Path(__file__).with_name(".env"))
+def main() -> None:
+    load_env(os.path.join(HERE, ".env"))
     token = os.environ.get("BOT_TOKEN")
     if not token:
         raise SystemExit("BOT_TOKEN не задан: укажите его в models_bot/.env")
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
     # На сервере systemd выдаёт каталог /var/lib/models-bot (StateDirectory в юните)
-    data_dir = Path(os.environ.get("STATE_DIRECTORY") or Path(__file__).with_name("data"))
-    store = Store(data_dir / "settings.db")
+    data_dir = os.environ.get("STATE_DIRECTORY") or os.path.join(HERE, "data")
+    store = Store(os.path.join(data_dir, "settings.db"))
     api = Api(token)
-    me = await api("getMe")
-    await api("setMyCommands", commands=ui.COMMANDS)
+    me = api("getMe")
+    api("setMyCommands", commands=ui.COMMANDS)
     # Вебхук снимаем, но апдейты не выбрасываем: сообщения, пришедшие во время
     # перезапуска, бот обработает, а не потеряет
-    await api("deleteWebhook", drop_pending_updates=False)
-    logging.info("Бот @%s запущен", me["username"])
-
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except (NotImplementedError, RuntimeError):
-            pass  # Windows: остановка по Ctrl+C
+    api("deleteWebhook", drop_pending_updates=False)
+    log.info("Бот @%s запущен", me["username"])
     # Рассылка о новых моделях идёт параллельно, бот отвечает сразу
-    announce = asyncio.create_task(announce_new_models(api, store))
+    threading.Thread(
+        target=announce_new_models, args=(api, store), name="announce", daemon=True
+    ).start()
     try:
-        await poll(api, Serial(Bot(api, store).handle), stop)
+        poll(api, Serial(Bot(api, store).handle), threading.Event())
     finally:
-        announce.cancel()
         api.close()
-        logging.info("Бот остановлен")
+        log.info("Бот остановлен")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

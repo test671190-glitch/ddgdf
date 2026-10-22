@@ -7,8 +7,7 @@
 """
 
 import re
-from dataclasses import dataclass
-from html import escape, unescape
+from collections import namedtuple
 
 from models_bot.catalog import ROLES, Model
 from models_bot.store import LANGS, Prefs, Turn
@@ -106,20 +105,27 @@ CANNED: dict[str, dict[str, list[str]]] = {
 }
 
 
-@dataclass(frozen=True)
-class Reply:
-    html: str
-    question_tokens: int
-    input_tokens: int
-    output_tokens: int
+class Reply(namedtuple("Reply", "html question_tokens input_tokens output_tokens")):
+    __slots__ = ()
 
     @property
     def total(self) -> int:
         return self.input_tokens + self.output_tokens
 
 
+# Свои escape и plain_text вместо модуля html: тот грузит таблицу из 2 000 сущностей
+TAG = re.compile(r"<[^>]+>")
+ENTITY = re.compile(r"&(?:lt|gt|amp|quot|#x27|#39);")
+ENTITIES = {"&lt;": "<", "&gt;": ">", "&amp;": "&", "&quot;": '"', "&#x27;": "'", "&#39;": "'"}
+
+
+def escape(text: str) -> str:
+    """Экранирование для HTML-разметки Telegram: ей достаточно &, < и >."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def plain_text(html: str) -> str:
-    return unescape(re.sub(r"<[^>]+>", "", html))
+    return ENTITY.sub(lambda m: ENTITIES[m.group()], TAG.sub("", html))
 
 
 def count_tokens(text: str) -> int:
