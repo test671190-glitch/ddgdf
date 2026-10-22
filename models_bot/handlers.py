@@ -25,12 +25,16 @@ async def show(call: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> 
 
 
 @router.message(CommandStart())
-@router.message(Command("models"))
 async def start(message: Message, store: Store) -> None:
     prefs = store.get(message.from_user.id)
     await message.answer(
         ui.welcome(message.from_user.first_name, prefs), reply_markup=ui.main_keyboard()
     )
+
+
+@router.message(Command("models"))
+async def models(message: Message) -> None:
+    await message.answer(ui.models_text(), reply_markup=ui.models_keyboard())
 
 
 @router.message(Command("other"))
@@ -54,6 +58,12 @@ async def nav_main(call: CallbackQuery, store: Store) -> None:
     prefs = store.get(call.from_user.id)
     await show(call, ui.welcome(call.from_user.first_name, prefs), ui.main_keyboard())
     await call.answer("← Главное меню")
+
+
+@router.callback_query(ui.Nav.filter(F.to == "models"))
+async def nav_models(call: CallbackQuery) -> None:
+    await show(call, ui.models_text(), ui.models_keyboard())
+    await call.answer(ui.MODELS_TITLE)
 
 
 @router.callback_query(ui.Nav.filter(F.to == "other"))
@@ -123,4 +133,4 @@ async def toggle(call: CallbackQuery, callback_data: ui.Toggle, store: Store) ->
 
 @router.message()
 async def fallback(message: Message) -> None:
-    await message.answer("Выберите модель в меню ↓", ui.main_keyboard())
+    await message.answer("Выберите раздел ↓", reply_markup=ui.main_keyboard())

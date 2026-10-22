@@ -20,7 +20,7 @@ _ids = itertools.count(1)
 
 # Все символы оформления. Ни у одного нет свойства Emoji в Unicode (emoji-data.txt),
 # поэтому Telegram не заменит их на цветные эмодзи
-DECOR = set("✻⌬✧⛭⌂ⓘ→←↓✓·—«»")
+DECOR = set("✻⌬✧⁂⛭⌂ⓘ→←↓✓·—")
 
 
 class FakeSession(BaseSession):
@@ -93,6 +93,7 @@ def all_screens() -> list[tuple[str, object]]:
     model = MODELS[prefs.model]
     return [
         (ui.welcome("Neo", prefs), ui.main_keyboard()),
+        (ui.models_text(), ui.models_keyboard()),
         (ui.other_text(), ui.other_keyboard()),
         (ui.model_card(model, prefs), ui.card_keyboard(model, prefs, "other")),
         (ui.settings_text(prefs), ui.settings_keyboard(prefs)),
@@ -101,11 +102,29 @@ def all_screens() -> list[tuple[str, object]]:
     ]
 
 
-def test_main_menu_lists_claude_then_gpt_then_other_and_settings():
-    texts = [b.text for b in buttons(ui.main_keyboard())]
+def test_main_menu_is_models_and_settings_in_one_row():
+    rows = ui.main_keyboard().inline_keyboard
+    assert [[b.text for b in row] for row in rows] == [["⁂ Модели", "⛭ Настройки"]]
+
+
+def test_models_menu_lists_claude_then_gpt_then_other():
+    texts = [b.text for b in buttons(ui.models_keyboard())]
     assert texts[:3] == ["✻ Claude Opus 5.5", "✻ Claude Sonnet 5.5", "✻ Claude Haiku 5.5"]
     assert texts[3:6] == ["⌬ GPT-6 Sol", "⌬ GPT-6 Astra", "⌬ GPT-6 Luna"]
-    assert texts[6:] == ["Остальные модели →", "⛭ Настройки"]
+    assert texts[6:] == ["Остальные модели →", "← В меню"]
+
+
+def test_back_leads_one_screen_up():
+    def back(markup) -> str:
+        return ui.Nav.unpack(buttons(markup)[-1].callback_data).to
+
+    model, prefs = MODELS["gemini-4-argon"], Prefs()
+    assert back(ui.models_keyboard()) == "main"
+    assert back(ui.other_keyboard()) == "models"
+    assert back(ui.card_keyboard(model, prefs, "other")) == "other"
+    assert back(ui.card_keyboard(model, prefs, "models")) == "models"
+    assert back(ui.settings_keyboard(prefs)) == "main"
+    assert back(ui.picker_keyboard(prefs)) == "settings"
 
 
 def test_other_models_are_gpt_6_1_and_gemini_only():
@@ -167,9 +186,37 @@ async def test_toggles_cycle_language_and_detail(tg):
 
 async def test_every_screen_opens(tg):
     bot, session, store = tg
-    for to in ("main", "other", "settings", "picker"):
+    screens = ("main", "models", "other", "settings", "picker")
+    for to in screens:
         await DP.feed_update(bot, callback(ui.Nav(to=to).pack()), store=store)
     for model_id in MODELS:
         await DP.feed_update(bot, callback(ui.Card(model_id=model_id).pack()), store=store)
-    assert len(session.named("EditMessageText")) == 4 + len(MODELS)
-    assert len(session.named("AnswerCallbackQuery")) == 4 + len(MODELS)
+    assert len(session.named("EditMessageText")) == len(screens) + len(MODELS)
+    assert len(session.named("AnswerCallbackQuery")) == len(screens) + len(MODELS)
+
+
+@pytest.mark.parametrize(
+    ("text", "first_button"),
+    [
+        ("/start", "⁂ Модели"),
+        ("/models", "✻ Claude Opus 5.5"),
+        ("/other", "⌬ GPT-6.1 Sol"),
+        ("/settings", "Модель · Claude Opus 5.5"),
+        ("просто текст", "⁂ Модели"),
+    ],
+)
+async def test_commands_and_text_get_a_screen(tg, text, first_button):
+    bot, session, store = tg
+    update = Update(
+        update_id=next(_ids),
+        message=Message(
+            message_id=next(_ids),
+            date=datetime.now(),
+            chat=Chat(id=42, type="private"),
+            from_user=User(id=42, is_bot=False, first_name="Neo"),
+            text=text,
+        ),
+    )
+    await DP.feed_update(bot, update, store=store)
+    sent = session.named("SendMessage")[-1]
+    assert buttons(sent.reply_markup)[0].text == first_button

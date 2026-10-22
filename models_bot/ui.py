@@ -1,8 +1,11 @@
 """Тексты и кнопки.
 
+Экраны: главное меню (Модели, Настройки) → Модели (Claude, GPT) → Остальные модели;
+у каждой модели — карточка. Кнопка «Назад» ведёт на экран выше.
+
 Оформление монохромное: только символы Unicode без эмодзи-представления, тонкие
 и одного веса. Знаки разработчиков — в catalog.VENDOR_MARKS, остальное здесь:
-⛭ настройки, → ← ↓ переходы, ✓ выбранное, · разделитель.
+⁂ модели, ⛭ настройки, → ← ↓ переходы, ✓ выбранное, · разделитель.
 """
 
 from html import escape
@@ -15,29 +18,31 @@ from models_bot.catalog import MODELS, OTHER_MODELS, TOP_MODELS, Model
 from models_bot.store import DETAILS, LANGS, Prefs
 
 BRAND = "unknown shop"
+MODELS_TITLE = "⁂ Модели"
 SETTINGS = "⛭ Настройки"
 TO_MENU = "← В меню"
+BACK = "← Назад"
 
 COMMANDS = [
     BotCommand(command="start", description="⌂ Главное меню"),
-    BotCommand(command="other", description="→ Остальные модели"),
+    BotCommand(command="models", description="⁂ Модели"),
     BotCommand(command="settings", description="⛭ Настройки"),
     BotCommand(command="help", description="ⓘ Помощь"),
 ]
 
 
 class Nav(CallbackData, prefix="nav"):
-    to: str  # main | other | settings | picker
+    to: str  # main | models | other | settings | picker
 
 
 class Card(CallbackData, prefix="card"):
     model_id: str
-    src: str = "main"  # main | other — куда ведёт «Назад»
+    src: str = "models"  # models | other — куда ведёт «Назад»
 
 
 class UseModel(CallbackData, prefix="use"):
     model_id: str
-    src: str = "main"  # main | other — из карточки, picker — из настроек
+    src: str = "models"  # models | other — из карточки, picker — из настроек
 
 
 class Toggle(CallbackData, prefix="tgl"):
@@ -51,10 +56,14 @@ def welcome(first_name: str | None, prefs: Prefs) -> str:
         f"Привет, {name}.\n\n"
         "<blockquote>✻ Claude — код, тексты, анализ\n"
         "⌬ GPT — универсальные задачи\n"
-        "✧ Gemini — в остальных моделях</blockquote>\n\n"
+        "✧ Gemini — линейка Google</blockquote>\n\n"
         f"Основная модель · <b>{escape(MODELS[prefs.model].name)}</b>\n"
-        "Выберите модель ↓"
+        "Выберите раздел ↓"
     )
+
+
+def models_text() -> str:
+    return f"<b>{MODELS_TITLE}</b>\nТоп нейросетей: Claude и GPT\n\nВыберите модель ↓"
 
 
 def other_text() -> str:
@@ -92,17 +101,25 @@ def picker_text() -> str:
 HELP = (
     "<b>ⓘ Помощь</b>\n\n"
     "<blockquote>/start — главное меню\n"
-    "/other — остальные модели\n"
+    "/models — модели\n"
     "/settings — настройки</blockquote>"
 )
 
 
 def main_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    builder.button(text=MODELS_TITLE, callback_data=Nav(to="models"))
+    builder.button(text=SETTINGS, callback_data=Nav(to="settings"))
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def models_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
     for m in TOP_MODELS:
         builder.button(text=m.label, callback_data=Card(model_id=m.id))
     builder.button(text="Остальные модели →", callback_data=Nav(to="other"))
-    builder.button(text=SETTINGS, callback_data=Nav(to="settings"))
+    builder.button(text=TO_MENU, callback_data=Nav(to="main"))
     builder.adjust(1)
     return builder.as_markup()
 
@@ -111,7 +128,7 @@ def other_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for m in OTHER_MODELS:
         builder.button(text=m.label, callback_data=Card(model_id=m.id, src="other"))
-    builder.button(text=TO_MENU, callback_data=Nav(to="main"))
+    builder.button(text=BACK, callback_data=Nav(to="models"))
     builder.adjust(1)
     return builder.as_markup()
 
@@ -122,9 +139,7 @@ def card_keyboard(model: Model, prefs: Prefs, src: str) -> InlineKeyboardMarkup:
         text="✓ Основная модель" if prefs.model == model.id else "Сделать основной",
         callback_data=UseModel(model_id=model.id, src=src),
     )
-    if src == "other":
-        builder.button(text="← К списку", callback_data=Nav(to="other"))
-    builder.button(text=TO_MENU, callback_data=Nav(to="main"))
+    builder.button(text=BACK, callback_data=Nav(to="other" if src == "other" else "models"))
     builder.adjust(1)
     return builder.as_markup()
 
@@ -144,6 +159,6 @@ def picker_keyboard(prefs: Prefs) -> InlineKeyboardMarkup:
     for m in TOP_MODELS + OTHER_MODELS:
         text = f"{m.label}  ✓" if m.id == prefs.model else m.label
         builder.button(text=text, callback_data=UseModel(model_id=m.id, src="picker"))
-    builder.button(text="← Назад", callback_data=Nav(to="settings"))
+    builder.button(text=BACK, callback_data=Nav(to="settings"))
     builder.adjust(1)
     return builder.as_markup()
