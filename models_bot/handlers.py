@@ -30,6 +30,7 @@ from models_bot.store import (
     TITLE_LENGTH,
     Chat,
     Prefs,
+    Referral,
     Store,
     Turn,
     next_value,
@@ -178,7 +179,10 @@ class Bot:
         prefs = self.visitor(uid)
         bonus = self.store.add_referral(inviter, uid, REF_BONUS) if inviter else None
         if payment := message.get("successful_payment"):
-            self.on_payment(uid, payment)
+            self.on_payment(uid, payment)  # оплату начисляем и заблокированному
+            return
+        if prefs.banned_until > time.time():
+            self.send(uid, ui.banned(prefs.banned_until))
             return
         attachment = answers.attachment_of(message)
         text = message.get("text") or (message.get("caption") if attachment else None)
@@ -276,6 +280,9 @@ class Bot:
             return
         uid = query["from"]["id"]
         prefs = self.visitor(uid)
+        if prefs.banned_until > time.time():
+            self.toast(query, ui.banned(prefs.banned_until), alert=True)
+            return
         if prefs.awaiting:
             # Любая кнопка отменяет ввод роли или названия
             prefs = self.store.update(uid, awaiting="")
@@ -743,13 +750,26 @@ class Bot:
             return 0
         return inviter
 
-    def tell_inviter(self, inviter: int, invitee: dict, balance: int) -> None:
-        """Бонус уже на балансе пригласившего: сообщить ему, если бот не заблокирован."""
-        log.info("Приглашение: %s пришёл по ссылке %s", invitee["id"], inviter)
-        if self.store.get(inviter).blocked:
+    def tell_inviter(self, inviter: int, invitee: dict, result: Referral) -> None:
+        """Бонус уже на балансе пригласившего (или он только что заблокирован за накрутку):
+        сообщить ему, если он не заблокировал бота. Пока блокировка идёт — молчим."""
+        log.info(
+            "Приглашение: %s пришёл по ссылке %s, +%s%s",
+            invitee["id"],
+            inviter,
+            result.credited,
+            " — накрутка, блокировка" if result.banned else "",
+        )
+        prefs = self.store.get(inviter)
+        if prefs.blocked or not (result.credited or result.banned):
             return
+        text = (
+            ui.referral_banned(prefs.banned_until)
+            if result.banned
+            else ui.referral_joined(invitee.get("first_name"), result.credited, result.balance)
+        )
         try:
-            self.send(inviter, ui.referral_joined(invitee.get("first_name"), REF_BONUS, balance))
+            self.send(inviter, text)
         except TelegramError as e:
             if e.code == 403:  # бота заблокировали: бонус начислен, сообщение не нужно
                 self.store.update(inviter, blocked=True)

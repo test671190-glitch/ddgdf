@@ -20,6 +20,7 @@ from models_bot.catalog import (
     NO_ROLE,
     OTHER_MODELS,
     REF_BONUS,
+    REF_BURST,
     STYLES,
     TOOLS,
     TOP_MODELS,
@@ -31,7 +32,7 @@ _ids = itertools.count(1)
 
 # Все символы оформления. Ни у одного нет свойства Emoji в Unicode (emoji-data.txt),
 # поэтому Telegram не заменит их на цветные эмодзи
-DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈❖↻⇄−▍+◐▣◩✶◎✐≡⌘→←↓↳✓·•—«»…×–")
+DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈❖⊘↻⇄−▍+◐▣◩✶◎✐≡⌘→←↓↳✓·•—«»…×–")
 OPUS = MODELS["claude-opus-5-5"]
 
 
@@ -173,6 +174,7 @@ def all_screens() -> list[tuple[str, dict | None]]:
         (ui.paid(100_000, 100_000) + ui.PAY_SUPPORT, ui.buy_keyboard()),
         (ui.invite_text(ui.ref_link("test_bot", 42), 3, 150_000), ui.invite_keyboard("x")),
         (ui.referral_joined("Neo", 50_000, 50_000) + ui.referral_joined(None, 1, 1), None),
+        (ui.referral_banned(time.time()) + ui.banned(time.time()), None),
         (ui.cant_read(model, "voice"), ui.answer_keyboard(1)),
         (ui.HELP, ui.other_model_keyboard(1, model.id)),
         (ui.STALE_BUTTON + ui.ONLY_TEXT + ui.ROLE_ONLY_TEXT + ui.TITLE_ONLY_TEXT, None),
@@ -1194,6 +1196,52 @@ def test_referral_bonus_is_credited_even_if_messages_fail(bot):
     with pytest.raises(tg.TelegramError):
         start_as(bot, 14, "/start ref_42")  # приветствие не ушло, а бонус уже начислен
     assert bot.store.referrals(42) == (3, 3 * REF_BONUS)
+
+
+def test_ten_joins_within_seconds_ban_the_inviter_for_a_day(bot):
+    pay(bot)  # купленные токены накрутка не трогает
+    start_as(bot, 100, "/start ref_42", "Old")
+    bot.store.db.execute("UPDATE referrals SET created = created - 60")  # честный, минуту назад
+    for uid in range(101, 101 + REF_BURST - 1):
+        start_as(bot, uid, "/start ref_42")
+    assert bot.store.get(42).balance == 100_000 + REF_BURST * REF_BONUS
+    start_as(bot, 200, "/start ref_42")  # десятый за секунды — атака
+    prefs = bot.store.get(42)
+    assert prefs.balance == 100_000 + REF_BONUS  # отменены все бонусы толпы, честный остался
+    assert 23 * 3600 < prefs.banned_until - time.time() <= 24 * 3600
+    assert bot.api.sent()[-1] == ui.referral_banned(prefs.banned_until)
+    assert bot.store.referrals(42) == (REF_BURST + 1, REF_BONUS)
+    welcome = [p for p in bot.api.named("sendMessage") if p["chat_id"] == 200]
+    assert welcome  # приглашённые пользуются ботом как обычно
+
+    sent = len(bot.api.sent())
+    start_as(bot, 201, "/start ref_42")  # пока блокировка — без бонуса и без сообщений
+    assert bot.store.get(42).balance == 100_000 + REF_BONUS
+    assert all(p["chat_id"] == 201 for p in bot.api.named("sendMessage")[-2:])
+    say(bot, "Привет")  # сам пригласивший: только сообщение о блокировке
+    assert bot.api.sent()[-1] == ui.banned(prefs.banned_until)
+    assert len(bot.api.sent()) == sent + 3 and bot.store.chats(42) == []
+    press(bot, "nav:menu")
+    toast = bot.api.named("answerCallbackQuery")[-1]
+    assert toast["show_alert"] and toast["text"] == ui.banned(prefs.banned_until)
+    pay(bot, "ch2")  # оплата во время блокировки всё равно начисляется
+    assert bot.store.get(42).balance == 200_000 + REF_BONUS
+
+    bot.store.update(42, banned_until=time.time() - 1)  # прошли сутки
+    bot.store.db.execute("UPDATE referrals SET created = created - 86400")
+    say(bot, "Привет")
+    assert bot.store.chats(42)
+    start_as(bot, 300, "/start ref_42")
+    assert bot.store.get(42).balance == 200_000 + 2 * REF_BONUS
+
+
+def test_joins_spread_out_in_time_are_not_an_attack(bot):
+    start = time.time()
+    for i in range(REF_BURST * 2):
+        bot.store.touch(1000 + i)
+        result = bot.store.add_referral(42, 1000 + i, REF_BONUS, now=start + i)
+        assert result.credited == REF_BONUS and not result.banned
+    assert bot.store.get(42).banned_until == 0
 
 
 # Уведомления о новых моделях

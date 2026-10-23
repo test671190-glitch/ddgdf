@@ -20,7 +20,7 @@ newchat, buy:<пакет>, ans:<ответ>:<r|m|s|back>, ansm:<ответ>:<м�
 Оформление монохромное: только символы Unicode без эмодзи-представления, тонкие
 и одного веса. Знаки разработчиков — в catalog.VENDOR_MARKS, остальное здесь:
 ⁂ модели, ⛭ меню и настройки, ☰ чаты, + новый чат, ▸ открыть, ✎ изменить, ✕ удалить,
-◈ баланс, ❖ приглашения, ↻ ⇄ − кнопки ответа, ⓘ уведомление, → ← ↓ ↳ переходы,
+◈ баланс, ❖ приглашения, ⊘ блокировка, ↻ ⇄ − кнопки ответа, ⓘ уведомление, → ← ↓ ↳ переходы,
 ✓ выбранное, · разделитель.
 """
 
@@ -35,6 +35,8 @@ from models_bot.catalog import (
     OTHER_MODELS,
     PACKS,
     REF_BONUS,
+    REF_BURST,
+    REF_BURST_SECONDS,
     REF_PREFIX,
     ROLE_MAX_LENGTH,
     STYLES,
@@ -527,6 +529,24 @@ def referral_joined(first_name: str | None, tokens: int, balance: int) -> str:
         f"{INVITE[0]} По вашей ссылке новый пользователь{who}: +{num(tokens)} токенов. "
         f"На балансе — {num(balance)}."
     )
+
+
+def until(ts: float) -> str:
+    """«24.10 в 16:05 по Москве»."""
+    return time.strftime("%d.%m в %H:%M по Москве", time.gmtime(ts + MSK))
+
+
+def referral_banned(until_ts: float) -> str:
+    """Пригласившему: по его ссылке за секунды пришла толпа — похоже на атаку ботами."""
+    return (
+        f"<b>⊘ Аккаунт заблокирован до {until(until_ts)}</b>\n"
+        f"По вашей ссылке за {REF_BURST_SECONDS} секунды пришло {REF_BURST} человек и больше — "
+        "это похоже на накрутку ботами. Бонусы за них отменены."
+    )
+
+
+def banned(until_ts: float) -> str:
+    return f"⊘ Аккаунт заблокирован до {until(until_ts)} за накрутку приглашений."
 
 
 ROLE_ONLY_TEXT = "Пришлите инструкцию текстом или нажмите «← Отмена»."

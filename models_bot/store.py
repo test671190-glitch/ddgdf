@@ -18,6 +18,9 @@ from models_bot.catalog import (
     LEGACY_ROLES,
     MODELS,
     NO_ROLE,
+    REF_BAN_SECONDS,
+    REF_BURST,
+    REF_BURST_SECONDS,
     STYLES,
     TOOLS,
 )
@@ -44,6 +47,7 @@ _PREFS = {
     "active": 0,  # id открытого чата; 0 — чат не открыт
     "balance": 0,  # купленные токены: тратятся, когда кончился бесплатный дневной лимит
     "kb": 0,  # версия клавиатуры внизу, которую пользователь уже получил
+    "banned_until": 0,  # до какого времени (unix) заблокирован за накрутку приглашений
 }
 AWAITING = re.compile(r"(role|rename:\d+|tool:[a-z]+(:[a-z]+)?)?")
 
@@ -70,6 +74,9 @@ CHAT_COLUMNS = "id, user_id, model, title, messages, updated"
 # tool — инструмент, которым получен ответ: "brainstorm" или "styles:anime"
 Answer = namedtuple("Answer", "id user_id chat_id question model attempt attachment tool")
 REPLIES_LIMIT = 100  # ответов с рабочими кнопками на пользователя
+# Итог приглашения: сколько токенов начислено, баланс пригласившего и заблокирован ли он
+# только что за накрутку
+Referral = namedtuple("Referral", "credited balance banned")
 
 
 def today() -> str:
@@ -436,23 +443,49 @@ class Store:
 
     # Приглашения
 
-    def add_referral(self, inviter: int, invitee: int, tokens: int) -> int | None:
-        """Начислить бонус за приглашённого. None — его уже кто-то пригласил.
-        Иначе — новый баланс пригласившего."""
+    def add_referral(
+        self, inviter: int, invitee: int, tokens: int, now: float | None = None
+    ) -> Referral | None:
+        """Записать приглашённого и начислить бонус. None — его уже кто-то пригласил.
+        Заблокированному за накрутку бонус не начисляется. Если это REF_BURST-й человек
+        за REF_BURST_SECONDS, бонусы за всех них отменяются, а пригласивший блокируется."""
+        now = time.time() if now is None else now
         with self.lock:
+            credited = 0 if self.get(inviter).banned_until > now else tokens
             try:
                 self.db.execute(
                     "INSERT INTO referrals (invitee, inviter, tokens, created) VALUES (?, ?, ?, ?)",
-                    (invitee, inviter, tokens, time.time()),
+                    (invitee, inviter, credited, now),
                 )
             except sqlite3.IntegrityError:
                 return None
-            self.db.execute(
-                "UPDATE prefs SET balance = coalesce(balance, 0) + ? WHERE user_id = ?",
-                (tokens, inviter),
-            )
+            banned = False
+            if credited:
+                since = now - REF_BURST_SECONDS
+                count, burst = self.db.execute(
+                    "SELECT count(*), coalesce(sum(tokens), 0) FROM referrals"
+                    " WHERE inviter = ? AND created >= ?",
+                    (inviter, since),
+                ).fetchone()
+                if count >= REF_BURST:
+                    banned, taken = True, burst - credited  # taken — уже на балансе
+                    credited = 0
+                    self.db.execute(
+                        "UPDATE referrals SET tokens = 0 WHERE inviter = ? AND created >= ?",
+                        (inviter, since),
+                    )
+                    self.db.execute(
+                        "UPDATE prefs SET balance = max(0, coalesce(balance, 0) - ?),"
+                        " banned_until = ? WHERE user_id = ?",
+                        (taken, now + REF_BAN_SECONDS, inviter),
+                    )
+            if credited:
+                self.db.execute(
+                    "UPDATE prefs SET balance = coalesce(balance, 0) + ? WHERE user_id = ?",
+                    (credited, inviter),
+                )
             self.db.commit()
-            return self.get(inviter).balance
+            return Referral(credited, self.get(inviter).balance, banned)
 
     def referrals(self, inviter: int) -> tuple[int, int]:
         """Сколько пользователей пригласил и сколько токенов получил за них."""
