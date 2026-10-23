@@ -14,9 +14,8 @@ from models_bot.store import LANGS, Prefs, Turn
 
 TEST_DAILY_LIMIT = 20_000  # бесплатных токенов в сутки на пользователя
 WARN_SHARE = 0.8  # на этой доле лимита — предупреждение
-TYPING_SECONDS = 0.4  # пауза «печатает…» перед первым куском ответа
 STREAM_STEPS = 3  # ответ появляется по частям: столько правок сообщения
-STREAM_DELAY = 0.5  # секунд между частями: Telegram не любит правки чаще
+STREAM_DELAY = 0.3  # секунд между частями: первая часть уходит сразу
 
 CANNED: dict[str, dict[str, list[str]]] = {
     "none": {

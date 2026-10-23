@@ -1,4 +1,7 @@
-"""Обработка апдейтов: команды, кнопки, чаты, ввод своей роли и названия чата.
+"""Обработка апдейтов: сообщения и чат с моделью, кнопки, меню, настройки, оплата.
+
+Вы всегда в чате: сообщение уходит текущей модели, а если чата ещё нет, он создаётся
+сам. Клавиатура внизу — «+ Новый чат», «☰ Мои чаты», «⁂ Модель», «⛭ Меню».
 
 Бот работает только в личных сообщениях: в группе он молчит, чтобы не отвечать
 на каждое сообщение участников. Методы вызываются из рабочих потоков tg.Serial,
@@ -20,6 +23,8 @@ from models_bot.store import (
     next_value,
 )
 from models_bot.tg import Api, TelegramError
+
+KEYBOARD_VERSION = 2  # клавиатура внизу; у кого старее — один раз пришлём новую
 
 
 def _int(text: str) -> int:
@@ -56,47 +61,12 @@ class Bot:
             link_preview_options={"is_disabled": True},
         )
 
-    def stream(self, uid: int, html: str, markup: dict, message_id: int | None = None) -> None:
-        """Ответ «печатается»: текст появляется частями правками одного сообщения,
-        а последняя правка ставит разметку и кнопки. message_id — дописать в это сообщение."""
-        plain = answers.plain_text(html)
-        for step in range(1, answers.STREAM_STEPS):
-            cut = plain.rfind(" ", 0, len(plain) * step // answers.STREAM_STEPS)
-            if cut <= 0:
-                continue
-            part = answers.escape(plain[:cut].rstrip()) + ui.CURSOR
-            try:
-                if message_id is None:
-                    message_id = self.send(uid, part)
-                else:
-                    self.edit(uid, message_id, part)
-            except TelegramError as e:
-                log.info("Промежуточная часть ответа не ушла: %s", e)
-            time.sleep(answers.STREAM_DELAY)
-        if message_id is None:
-            self.send(uid, html, markup)
-            return
-        try:
-            self.edit(uid, message_id, html, markup)
-        except TelegramError as e:
-            if "message is not modified" not in e.description:
-                log.info("Ответ не дописан в сообщение, присылаю заново: %s", e)
-                self.send(uid, html, markup)
-
     def show(self, query: dict, text: str, markup: dict) -> None:
         """Перерисовать экран в сообщении с кнопкой, а если его не править — прислать заново."""
         message = query.get("message") or {}
         if message.get("date"):  # у недоступного (слишком старого) сообщения date = 0
             try:
-                self.api(
-                    "editMessageText",
-                    chat_id=message["chat"]["id"],
-                    message_id=message["message_id"],
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=markup,
-                    link_preview_options={"is_disabled": True},
-                )
+                self.edit(message["chat"]["id"], message["message_id"], text, markup)
                 return
             except TelegramError as e:
                 if "message is not modified" in e.description:
@@ -112,25 +82,56 @@ class Bot:
         except TelegramError as e:
             log.info("Ответ на кнопку не ушёл: %s", e)  # кнопку нажали слишком давно
 
-    # Чаты пользователя
+    def stream(self, uid: int, html: str, markup: dict, message_id: int | None = None) -> None:
+        """Ответ «печатается»: первая часть уходит сразу, дальше — правки того же сообщения,
+        а последняя правка ставит разметку и кнопки. message_id — писать в это сообщение."""
+        plain = answers.plain_text(html)
+        for step in range(1, answers.STREAM_STEPS):
+            cut = plain.rfind(" ", 0, len(plain) * step // answers.STREAM_STEPS)
+            if cut <= 0:
+                continue
+            part = answers.escape(plain[:cut].rstrip()) + ui.CURSOR
+            try:
+                if message_id is None:
+                    message_id = self.send(uid, part)  # первая часть — без задержки
+                else:
+                    time.sleep(answers.STREAM_DELAY)
+                    self.edit(uid, message_id, part)
+            except TelegramError as e:
+                log.info("Промежуточная часть ответа не ушла: %s", e)
+        if message_id is None:
+            self.send(uid, html, markup)
+            return
+        time.sleep(answers.STREAM_DELAY)
+        try:
+            self.edit(uid, message_id, html, markup)
+        except TelegramError as e:
+            if "message is not modified" not in e.description:
+                log.info("Ответ не дописан в сообщение, присылаю заново: %s", e)
+                self.send(uid, html, markup)
+
+    # Текущий чат
 
     def own_chat(self, uid: int, chat_id: int) -> Chat | None:
         chat = self.store.chat(chat_id) if chat_id else None
         return chat if chat and chat.user_id == uid else None  # чужой чат — как удалённый
 
-    def open_chat_of(self, uid: int, prefs: Prefs) -> tuple[Chat | None, Model | None]:
-        """Открытый чат и его модель. Если чат удалён или его модель убрали — чат закрыт."""
+    def current(self, uid: int, prefs: Prefs) -> tuple[Chat | None, Model]:
+        """Текущий чат (или None, если его ещё нет) и модель, которая отвечает."""
         chat = self.own_chat(uid, prefs.active)
         model = MODELS.get(chat.model) if chat else None
-        if prefs.active and model is None:
-            self.store.update(uid, active=0)
-            return None, None
-        return chat, model
+        if chat and model is None:
+            chat = None  # модель чата убрали из каталога — следующее сообщение начнёт новый
+        return chat, model or MODELS[prefs.model]
 
     def last_question(self, chat: Chat) -> str | None:
         return next(
             (t.text for t in reversed(self.store.history(chat.id)) if t.author == "user"), None
         )
+
+    def keyboard(self, uid: int, prefs: Prefs) -> dict:
+        _, model = self.current(uid, prefs)
+        return ui.keyboard(model)
 
     # Вход
 
@@ -161,64 +162,81 @@ class Bot:
             return
         attachment = answers.attachment_of(message)
         text = message.get("text") or (message.get("caption") if attachment else None)
-        if prefs.awaiting and ((text or "").startswith("/") or text in ui.CHAT_BUTTONS):
-            # Команда или кнопка чата отменяют ввод роли или названия, а не становятся им
+        command = (
+            text.split()[0][1:].split("@")[0].lower()
+            if text and text.startswith("/") and not attachment
+            else None
+        )
+        buttons = ui.KEYBOARD_BUTTONS + ui.OLD_BUTTONS
+        if prefs.awaiting and (command is not None or text in buttons):
+            # Команда или кнопка внизу отменяют ввод роли или названия, а не становятся им
             prefs = self.store.update(uid, awaiting="")
-        if text and text.startswith("/") and not attachment:
-            command = text.split()[0][1:].split("@")[0].lower()
+        prefs = self.refresh_keyboard(uid, prefs, command)
+        if command is not None:
             self.command(command, uid, user, prefs)
-        elif text == ui.CHATS:
-            self.send_chats(uid, prefs)
-        elif text == ui.NEW_DIALOG:
-            self.new_dialog(uid, prefs)
-        elif text == ui.END_CHAT:
-            self.end_chat(uid, user, prefs)
+        elif text in buttons:
+            self.keyboard_button(text, uid, prefs)
         elif prefs.awaiting == "role":
             self.role_input(uid, None if attachment else text)
         elif prefs.awaiting.startswith("rename:"):
-            self.rename_input(
-                uid, _int(prefs.awaiting.partition(":")[2]), None if attachment else text
-            )
+            chat_id = _int(prefs.awaiting.partition(":")[2])
+            self.rename_input(uid, chat_id, None if attachment else text)
         elif not text and not attachment:
             self.send(uid, ui.ONLY_TEXT)
         else:
-            chat, model = self.open_chat_of(uid, prefs)
-            if chat and attachment and attachment.kind not in model.inputs:
-                self.send(uid, ui.cant_read(model, attachment.kind))
-            elif chat:
-                self.chat(uid, prefs, chat, model, text or "", attachment)
-            else:
-                chats = self.store.chats(uid)
-                last = chats[0] if chats else None
-                self.send(uid, ui.no_chat_text(), ui.no_chat_keyboard(prefs, last))
+            self.ask(uid, prefs, text or "", attachment)
+
+    def refresh_keyboard(self, uid: int, prefs: Prefs, command: str | None) -> Prefs:
+        """После обновления бота у прежних пользователей на экране старая клавиатура:
+        один раз присылаем новую с пояснением. /start пришлёт её и так."""
+        if prefs.kb >= KEYBOARD_VERSION:
+            return prefs
+        prefs = self.store.update(uid, kb=KEYBOARD_VERSION)
+        if command != "start" and self.store.chats(uid):
+            self.send(uid, ui.KEYBOARD_UPDATED, self.keyboard(uid, prefs))
+        return prefs
+
+    def keyboard_button(self, text: str, uid: int, prefs: Prefs) -> None:
+        if text in (ui.NEW_CHAT, ui.OLD_NEW_DIALOG):
+            self.new_chat(uid, prefs)
+        elif text in (ui.MY_CHATS, ui.OLD_CHATS):
+            self.send_chats(uid, prefs)
+        elif text == ui.MODEL:
+            self.send_picker(uid, prefs)
+        elif text == ui.MENU:
+            self.send_menu(uid, prefs)
+        else:  # «■ Завершить чат» со старой клавиатуры
+            self.send(uid, ui.NO_CLOSING, self.keyboard(uid, prefs))
 
     def command(self, command: str, uid: int, user: dict, prefs: Prefs) -> None:
-        if command == "models":
+        if command in ("new", "chat"):
+            self.new_chat(uid, prefs)
+        elif command == "chats":
+            self.send_chats(uid, prefs)
+        elif command == "model":
+            self.send_picker(uid, prefs)
+        elif command == "menu":
+            self.send_menu(uid, prefs)
+        elif command == "models":
             self.send(uid, ui.models_text(), ui.models_keyboard())
         elif command == "other":
             self.send(uid, ui.other_text(), ui.other_keyboard())
-        elif command == "chats":
-            self.send_chats(uid, prefs)
-        elif command == "chat":
-            self.chat_with(uid, MODELS[prefs.model], prefs)
-        elif command == "new":
-            self.new_dialog(uid, prefs)
-        elif command == "stop":
-            self.end_chat(uid, user, prefs)
         elif command == "settings":
             text = ui.settings_text(prefs, self.store.used_today(uid))
             self.send(uid, text, ui.settings_keyboard(prefs))
-        elif command == "help":
-            self.send(uid, ui.HELP)
         elif command == "balance":
             self.send(
                 uid, ui.balance_text(prefs, self.store.used_today(uid)), ui.balance_keyboard()
             )
+        elif command == "help":
+            self.send(uid, ui.HELP)
         elif command == "paysupport":
             self.send(uid, ui.PAY_SUPPORT)
+        elif command == "stop":
+            self.send(uid, ui.NO_CLOSING, self.keyboard(uid, prefs))
         else:  # /start и неизвестные команды
-            chat, _ = self.open_chat_of(uid, prefs)
-            self.send(uid, ui.welcome(user.get("first_name"), prefs, chat), ui.main_keyboard())
+            chat, model = self.current(uid, prefs)
+            self.send(uid, ui.welcome(user.get("first_name"), model, chat), ui.keyboard(model))
 
     def on_button(self, query: dict) -> None:
         message = query.get("message") or {}
@@ -234,7 +252,7 @@ class Bot:
         if kind == "nav" and arg in SCREENS:
             self.toast(query, SCREENS[arg])
             self.screen(query, arg, prefs)
-        elif kind in ("card", "use", "chat"):
+        elif kind in ("card", "pick", "chat"):
             model_id, _, src = arg.partition(":")
             model = MODELS.get(model_id)
             if model is None:
@@ -243,17 +261,26 @@ class Bot:
             elif kind == "card":
                 self.toast(query, model.label)
                 self.show_card(query, model, prefs, src)
-            elif kind == "use":
-                self.use_model(query, model, prefs, src)
+            elif kind == "pick":
+                self.pick_model(query, model, prefs, src)
             else:
-                self.chat_button(query, model, prefs, src)
+                self.toast(query, f"{ui.NEW_CHAT} · {model.name}")
+                self.new_chat(uid, prefs, model)
+                if src in ("models", "other"):
+                    self.show_card(query, model, self.store.get(uid), src)
+        elif kind == "use":  # «Сделать основной» из прошлой версии — теперь смена модели
+            model_id, _, src = arg.partition(":")
+            if model := MODELS.get(model_id):
+                self.pick_model(query, model, prefs, "p")
+            else:
+                self.toast(query, ui.STALE_BUTTON)
         elif kind == "chats":
             page, _, mode = arg.partition(":")
             self.toast(query)
             self.show_chats(query, prefs, _int(page), mode == "e")
         elif kind == "newchat":
-            self.toast(query, f"▸ Новый чат с {MODELS[prefs.model].name}")
-            self.start_chat(uid, MODELS[prefs.model], prefs)
+            self.toast(query, ui.NEW_CHAT)
+            self.new_chat(uid, prefs)
         elif kind in ("open", "info", "ren", "del", "delok"):
             chat_id, _, src = arg.partition(":")
             chat = self.own_chat(uid, _int(chat_id))
@@ -276,9 +303,9 @@ class Bot:
             self.toggle(query, arg, prefs)
         elif kind == "role" and (arg in ROLES or arg == CUSTOM_ROLE):
             self.set_role(query, arg)
-        elif kind == "dlg":  # кнопка под ответами из прошлой версии бота
+        elif kind == "dlg":  # «Новый диалог» под ответами самой первой версии
             self.toast(query)
-            self.new_dialog(uid, prefs)
+            self.new_chat(uid, prefs)
         else:
             self.toast(query, ui.STALE_BUTTON)
             self.screen(query, "main", prefs)
@@ -287,10 +314,9 @@ class Bot:
 
     def screen(self, query: dict, name: str, prefs: Prefs) -> None:
         uid = query["from"]["id"]
+        chat, model = self.current(uid, prefs)
         if name == "main":
-            chat, _ = self.open_chat_of(uid, prefs)
-            text = ui.welcome(query["from"].get("first_name"), prefs, chat)
-            markup = ui.main_keyboard()
+            text, markup = ui.menu_text(model, chat, prefs), ui.menu_keyboard()
         elif name == "models":
             text, markup = ui.models_text(), ui.models_keyboard()
         elif name == "other":
@@ -305,28 +331,31 @@ class Bot:
             text = ui.balance_text(prefs, self.store.used_today(uid))
             markup = ui.balance_keyboard()
         elif name == "picker":
-            text, markup = ui.picker_text(), ui.picker_keyboard(prefs)
+            text, markup = ui.picker_text(model), ui.picker_keyboard(model.id)
         elif name == "role":
             text, markup = ui.role_text(prefs), ui.role_keyboard(prefs)
         else:
             text, markup = ui.notify_text(), ui.notify_keyboard(prefs)
         self.show(query, text, markup)
 
+    def send_menu(self, uid: int, prefs: Prefs) -> None:
+        chat, model = self.current(uid, prefs)
+        self.send(uid, ui.menu_text(model, chat, prefs), ui.menu_keyboard())
+
+    def send_picker(self, uid: int, prefs: Prefs) -> None:
+        _, model = self.current(uid, prefs)
+        self.send(uid, ui.picker_text(model), ui.picker_keyboard(model.id))
+
     def show_card(self, query: dict, model: Model, prefs: Prefs, src: str) -> None:
-        chat, _ = self.open_chat_of(query["from"]["id"], prefs)
-        open_model = chat.model if chat else ""
-        self.show(
-            query,
-            ui.model_card(model, prefs, open_model),
-            ui.card_keyboard(model, prefs, src, open_model),
-        )
+        _, current = self.current(query["from"]["id"], prefs)
+        self.show(query, ui.model_card(model, current.id), ui.card_keyboard(model, src, current.id))
 
     def chats_screen(self, uid: int, prefs: Prefs, page: int, edit: bool) -> tuple[str, dict]:
-        chats = self.store.chats(uid)
-        active, _ = self.open_chat_of(uid, prefs)
+        chats = [c for c in self.store.chats(uid) if c.messages or c.id == prefs.active]
+        active, _ = self.current(uid, prefs)
         return (
             ui.chats_text(chats, active, edit),
-            ui.chats_keyboard(chats, active.id if active else 0, page, edit, prefs),
+            ui.chats_keyboard(chats, active.id if active else 0, page, edit),
         )
 
     def show_chats(self, query: dict, prefs: Prefs, page: int, edit: bool) -> None:
@@ -335,19 +364,112 @@ class Bot:
     def send_chats(self, uid: int, prefs: Prefs) -> None:
         self.send(uid, *self.chats_screen(uid, prefs, 0, False))
 
-    # Настройки
+    # Модель и чаты
 
-    def use_model(self, query: dict, model: Model, prefs: Prefs, src: str) -> None:
+    def pick_model(self, query: dict, model: Model, prefs: Prefs, src: str) -> None:
+        """Сменить модель текущего чата: переписка остаётся, дальше отвечает новая модель."""
         uid = query["from"]["id"]
-        if prefs.model == model.id and src != "picker":
-            self.toast(query, f"✓ {model.name} уже основная")
+        chat, current = self.current(uid, prefs)
+        if current.id == model.id:
+            self.toast(query, f"✓ Уже отвечает {model.name}")
             return
+        if chat:
+            self.store.set_chat_model(chat.id, model.id)
         prefs = self.store.update(uid, model=model.id)
-        self.toast(query, f"✓ Основная модель · {model.name}")
-        if src == "picker":
-            self.screen(query, "settings", prefs)
+        self.toast(query, f"✓ Теперь отвечает {model.name}")
+        if src == "p":
+            self.show(query, ui.picker_text(model), ui.picker_keyboard(model.id))
         else:
             self.show_card(query, model, prefs, src)
+        # Новая клавиатура: в поле ввода — новая модель
+        self.send(uid, ui.model_switched(model, chat), ui.keyboard(model))
+
+    def new_chat(self, uid: int, prefs: Prefs, model: Model | None = None) -> None:
+        """Начать новый чат; прошлый остаётся в «Мои чаты». model — с другой моделью."""
+        chat, current = self.current(uid, prefs)
+        model = model or current
+        if chat and chat.messages == 0:
+            # Текущий чат и так пустой — новый не плодим, только меняем модель, если просили
+            if chat.model != model.id:
+                self.store.set_chat_model(chat.id, model.id)
+            self.store.update(uid, model=model.id)
+            self.send(uid, ui.already_new(model), ui.keyboard(model))
+            return
+        new, dropped = self.store.new_chat(uid, model.id)
+        self.store.update(uid, active=new.id, model=model.id)
+        self.send(uid, ui.new_chat_text(model, chat, dropped), ui.keyboard(model))
+
+    def chat_action(self, query: dict, kind: str, chat: Chat, prefs: Prefs, src: str) -> None:
+        """src у «open»: l — нажато в списке, i — в карточке чата."""
+        uid = query["from"]["id"]
+        if kind == "open":
+            model = MODELS.get(chat.model)
+            if model is None:
+                self.toast(query, "Модель этого чата больше недоступна", alert=True)
+                return
+            self.toast(query, f"▸ {ui.chat_name(chat)}")
+            previous, _ = self.current(uid, prefs)
+            if previous and previous.messages == 0 and previous.id != chat.id:
+                self.store.delete_chat(previous.id)  # пустой чат хранить незачем
+            prefs = self.store.update(uid, active=chat.id, model=chat.model)
+            last = self.last_question(chat)
+            if src == "l":  # в списке галочка переезжает на этот чат
+                self.show_chats(query, prefs, 0, False)
+            elif src == "i":
+                self.show(
+                    query,
+                    ui.chat_info_text(chat, chat.id, last),
+                    ui.chat_info_keyboard(chat, chat.id),
+                )
+            self.send(uid, ui.chat_opened(chat, model, last, prefs), ui.keyboard(model))
+        elif kind == "info":
+            self.toast(query)
+            self.show(
+                query,
+                ui.chat_info_text(chat, prefs.active, self.last_question(chat)),
+                ui.chat_info_keyboard(chat, prefs.active),
+            )
+        elif kind == "ren":
+            self.store.update(uid, awaiting=f"rename:{chat.id}")
+            self.toast(query, "✎ Переименовать")
+            self.show(query, ui.rename_text(chat), ui.rename_keyboard(chat))
+        elif kind == "del":
+            self.toast(query)
+            self.show(query, ui.delete_text(chat), ui.delete_keyboard(chat))
+        else:  # delok — удаление подтверждено
+            self.store.delete_chat(chat.id)
+            self.toast(query, "✕ Чат удалён")
+            if prefs.active == chat.id:
+                prefs = self.store.update(uid, active=0)
+                self.show_chats(query, prefs, 0, True)
+                self.send(uid, ui.chat_deleted(chat), self.keyboard(uid, prefs))
+            else:
+                self.show_chats(query, prefs, 0, True)
+
+    def rename_input(self, uid: int, chat_id: int, text: str | None) -> None:
+        chat = self.own_chat(uid, chat_id)
+        if chat is None:
+            self.store.update(uid, awaiting="")
+            self.send(uid, ui.CHAT_GONE)
+            return
+        if not text:
+            self.send(uid, ui.TITLE_ONLY_TEXT, ui.rename_keyboard(chat))
+            return
+        title = " ".join(text.split())
+        if len(title) > TITLE_LENGTH:
+            self.send(uid, ui.title_too_long(len(title)), ui.rename_keyboard(chat))
+            return
+        self.store.rename_chat(chat.id, title)
+        prefs = self.store.update(uid, awaiting="")
+        chat = chat._replace(title=title)
+        self.send(
+            uid,
+            f"{ui.TITLE_SAVED}\n\n"
+            + ui.chat_info_text(chat, prefs.active, self.last_question(chat)),
+            ui.chat_info_keyboard(chat, prefs.active),
+        )
+
+    # Настройки
 
     def toggle(self, query: dict, key: str, prefs: Prefs) -> None:
         if key == "lang":
@@ -382,135 +504,7 @@ class Bot:
         prefs = self.store.update(uid, role=CUSTOM_ROLE, role_text=text, awaiting="")
         self.send(uid, ui.role_text(prefs, note=ui.ROLE_SAVED), ui.role_keyboard(prefs))
 
-    # Список чатов: перейти, переименовать, удалить
-
-    def chat_action(self, query: dict, kind: str, chat: Chat, prefs: Prefs, src: str) -> None:
-        """src у «open»: l — нажато в списке, i — в карточке чата, пусто — под подсказкой."""
-        uid = query["from"]["id"]
-        if kind == "open":
-            model = MODELS.get(chat.model)
-            if model is None:
-                self.toast(query, "Модель этого чата больше недоступна", alert=True)
-                return
-            self.toast(query, f"▸ {ui.chat_name(chat)}")
-            prefs = self.store.update(uid, active=chat.id)
-            last = self.last_question(chat)
-            if src == "l":  # в списке галочка переезжает на этот чат
-                self.show_chats(query, prefs, 0, False)
-            elif src == "i":
-                self.show(
-                    query,
-                    ui.chat_info_text(chat, chat.id, last),
-                    ui.chat_info_keyboard(chat, chat.id),
-                )
-            self.send(uid, ui.chat_opened(chat, model, last, prefs), ui.chat_keyboard(model))
-        elif kind == "info":
-            self.toast(query)
-            self.show(
-                query,
-                ui.chat_info_text(chat, prefs.active, self.last_question(chat)),
-                ui.chat_info_keyboard(chat, prefs.active),
-            )
-        elif kind == "ren":
-            self.store.update(uid, awaiting=f"rename:{chat.id}")
-            self.toast(query, "✎ Переименовать")
-            self.show(query, ui.rename_text(chat), ui.rename_keyboard(chat))
-        elif kind == "del":
-            self.toast(query)
-            self.show(query, ui.delete_text(chat), ui.delete_keyboard(chat))
-        else:  # delok — удаление подтверждено
-            self.store.delete_chat(chat.id)
-            self.toast(query, "✕ Чат удалён")
-            if prefs.active == chat.id:
-                prefs = self.store.update(uid, active=0)
-                self.show_chats(query, prefs, 0, True)
-                # Клавиатура внизу была от этого чата — убираем её
-                self.send(uid, ui.chat_deleted(chat), ui.REMOVE_KEYBOARD)
-            else:
-                self.show_chats(query, prefs, 0, True)
-
-    def rename_input(self, uid: int, chat_id: int, text: str | None) -> None:
-        chat = self.own_chat(uid, chat_id)
-        if chat is None:
-            self.store.update(uid, awaiting="")
-            self.send(uid, ui.CHAT_GONE)
-            return
-        if not text:
-            self.send(uid, ui.TITLE_ONLY_TEXT, ui.rename_keyboard(chat))
-            return
-        title = " ".join(text.split())
-        if len(title) > TITLE_LENGTH:
-            self.send(uid, ui.title_too_long(len(title)), ui.rename_keyboard(chat))
-            return
-        self.store.rename_chat(chat.id, title)
-        prefs = self.store.update(uid, awaiting="")
-        chat = chat._replace(title=title)
-        self.send(
-            uid,
-            f"{ui.TITLE_SAVED}\n\n"
-            + ui.chat_info_text(chat, prefs.active, self.last_question(chat)),
-            ui.chat_info_keyboard(chat, prefs.active),
-        )
-
-    # Чат
-
-    def chat_button(self, query: dict, model: Model, prefs: Prefs, src: str) -> None:
-        uid = query["from"]["id"]
-        self.toast(query, f"▸ Чат с {model.name}")
-        if src not in ("models", "other"):
-            self.chat_with(uid, model, prefs)  # кнопка под подсказкой «чат не открыт»
-            return
-        # Кнопка в карточке начинает новый чат, даже если с этой моделью уже есть открытый.
-        # Карточку обновляем: на ней видно, что чат открыт
-        prefs, started = self.new_chat(uid, model, prefs)
-        self.show_card(query, model, prefs, src)
-        self.send(uid, started, ui.chat_keyboard(model))
-
-    def chat_with(self, uid: int, model: Model, prefs: Prefs) -> None:
-        """/chat и «▸ Новый чат с …» под подсказкой: открытый чат с той же моделью
-        не дублируем — просто напоминаем, что он открыт."""
-        chat, open_model = self.open_chat_of(uid, prefs)
-        if chat and open_model.id == model.id:
-            self.send(uid, ui.chat_already_open(chat, model), ui.chat_keyboard(model))
-        else:
-            self.start_chat(uid, model, prefs)
-
-    def start_chat(self, uid: int, model: Model, prefs: Prefs) -> None:
-        _, started = self.new_chat(uid, model, prefs)
-        self.send(uid, started, ui.chat_keyboard(model))
-
-    def new_chat(self, uid: int, model: Model, prefs: Prefs) -> tuple[Prefs, str]:
-        """Новый чат становится открытым; прошлый остаётся в списке, если в нём что-то было.
-        Возвращает настройки и текст сообщения о начале чата."""
-        previous, _ = self.open_chat_of(uid, prefs)
-        if previous and previous.messages == 0:
-            self.store.delete_chat(previous.id)  # пустой чат хранить незачем
-            previous = None
-        chat, dropped = self.store.new_chat(uid, model.id)
-        prefs = self.store.update(uid, active=chat.id)
-        return prefs, ui.chat_started(model, prefs, previous, dropped)
-
-    def new_dialog(self, uid: int, prefs: Prefs) -> None:
-        """«↺ Новый диалог»: ещё один чат с той же моделью, прошлый сохраняется."""
-        chat, model = self.open_chat_of(uid, prefs)
-        if chat is None:
-            self.send(uid, ui.NO_CHAT_TO_CLOSE, ui.REMOVE_KEYBOARD)
-        elif chat.messages == 0:
-            self.send(uid, ui.chat_already_open(chat, model), ui.chat_keyboard(model))
-        else:
-            self.start_chat(uid, model, prefs)
-
-    def end_chat(self, uid: int, user: dict, prefs: Prefs) -> None:
-        chat, _ = self.open_chat_of(uid, prefs)
-        if chat is None:
-            self.send(uid, ui.NO_CHAT_TO_CLOSE, ui.REMOVE_KEYBOARD)
-            return
-        prefs = self.store.update(uid, active=0)
-        kept = chat.messages > 0
-        if not kept:
-            self.store.delete_chat(chat.id)
-        self.send(uid, ui.chat_ended(chat, kept), ui.REMOVE_KEYBOARD)
-        self.send(uid, ui.welcome(user.get("first_name"), prefs), ui.main_keyboard())
+    # Ответ модели
 
     def out_of_tokens(self, uid: int, prefs: Prefs) -> bool:
         """Нет ни бесплатных токенов на сегодня, ни купленных: отвечать нечем."""
@@ -519,7 +513,7 @@ class Bot:
         self.send(uid, answers.limit_reached(), ui.buy_keyboard())
         return True
 
-    def finish(self, uid: int, prefs: Prefs, reply: answers.Reply, html: str, used: int) -> str:
+    def finish(self, prefs: Prefs, reply: answers.Reply, html: str, used: int) -> str:
         """Ответ готов: добавить строку расхода. Возвращает HTML для отправки."""
         if prefs.show_usage:
             balance = max(0, prefs.balance - answers.paid_part(used, used + reply.total))
@@ -536,27 +530,27 @@ class Bot:
                 markup = None if balance else ui.buy_keyboard()
                 self.send(uid, notice, markup)
 
-    def chat(
-        self,
-        uid: int,
-        prefs: Prefs,
-        chat: Chat,
-        model: Model,
-        text: str,
-        attachment: answers.Attachment | None = None,
-    ) -> None:
+    def ask(self, uid: int, prefs: Prefs, text: str, attachment: answers.Attachment | None) -> None:
+        """Сообщение модели в текущий чат. Чата нет — он начинается сам."""
+        chat, model = self.current(uid, prefs)
+        if attachment and attachment.kind not in model.inputs:
+            self.send(uid, ui.cant_read(model, attachment.kind))
+            return
         if self.out_of_tokens(uid, prefs):
             return
+        started = chat is None
+        if started:
+            chat, _ = self.store.new_chat(uid, model.id)
+            prefs = self.store.update(uid, active=chat.id)
         used = self.store.used_today(uid)
-        self.api("sendChatAction", chat_id=uid, action="typing")
-        time.sleep(answers.TYPING_SECONDS)
         history = self.store.history(chat.id) if prefs.memory else []
         reply = answers.compose(model, prefs, text, history, attachment=attachment)
         packed = answers.pack_attachment(attachment)
         reply_id = self.store.add_reply(uid, chat.id, text, model.id, packed)
-        self.stream(
-            uid, self.finish(uid, prefs, reply, reply.html, used), ui.answer_keyboard(reply_id)
-        )
+        html = self.finish(prefs, reply, reply.html, used)
+        if started:
+            html = f"<i>{ui.NEW_CHAT}</i>\n" + html
+        self.stream(uid, html, ui.answer_keyboard(reply_id))
         # Токены и история записываются, только когда ответ дошёл
         self.pay(uid, prefs, reply.total)
         asked = f"[{attachment.about}] {text}".strip() if attachment else text
@@ -622,7 +616,7 @@ class Bot:
             attachment=attachment,
         )
         used = self.store.used_today(uid)
-        html = self.finish(uid, prefs, reply, reply.html, used)
+        html = self.finish(prefs, reply, reply.html, used)
         message_id = message["message_id"] if message.get("date") else None
         self.stream(uid, html, ui.answer_keyboard(answer.id), message_id)
         self.pay(uid, prefs, reply.total)
@@ -670,12 +664,12 @@ class Bot:
 
 # Экран → всплывающая подпись при переходе
 SCREENS = {
-    "main": "← Главное меню",
+    "main": "← Меню",
     "models": ui.MODELS_TITLE,
     "other": "→ Остальные модели",
     "chats": ui.MY_CHATS,
     "settings": ui.SETTINGS,
-    "picker": "⛭ Основная модель",
+    "picker": ui.MODEL,
     "role": "⛭ Роль",
     "notify": "⛭ Уведомления",
     "balance": ui.BALANCE,

@@ -34,6 +34,7 @@ _PREFS = {
     "blocked": False,  # пользователь заблокировал бота: уведомления ему не шлём
     "active": 0,  # id открытого чата; 0 — чат не открыт
     "balance": 0,  # купленные токены: тратятся, когда кончился бесплатный дневной лимит
+    "kb": 0,  # версия клавиатуры внизу, которую пользователь уже получил
 }
 AWAITING = re.compile(r"(role|rename:\d+)?")
 
@@ -254,6 +255,12 @@ class Store:
                 (user_id,),
             ).fetchall()
         return [Chat(*row) for row in rows]
+
+    def set_chat_model(self, chat_id: int, model: str) -> None:
+        """Сменить модель чата: переписка остаётся, дальше отвечает новая модель."""
+        with self.lock:
+            self.db.execute("UPDATE chats SET model = ? WHERE id = ?", (model, chat_id))
+            self.db.commit()
 
     def rename_chat(self, chat_id: int, title: str) -> None:
         with self.lock:
