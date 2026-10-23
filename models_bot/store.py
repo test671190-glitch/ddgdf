@@ -41,7 +41,8 @@ _PREFS = {
     "notify_models": True,
     "notify_limit": True,
     "chat": "",  # прежняя версия: модель единственного чата; переносится в chats при запуске
-    # Что станет следующим сообщением: "role", "rename:<чат>" или "tool:<инструмент>[:<стиль>]"
+    # Что станет следующим сообщением: "role", "rename:<чат>", "tool:<инструмент>[:<стиль>]"
+    # или "adm:<действие>" — ввод в тест-панели
     "awaiting": "",
     "blocked": False,  # пользователь заблокировал бота: уведомления ему не шлём
     "active": 0,  # id открытого чата; 0 — чат не открыт
@@ -49,7 +50,7 @@ _PREFS = {
     "kb": 0,  # версия клавиатуры внизу, которую пользователь уже получил
     "banned_until": 0,  # до какого времени (unix) заблокирован за накрутку приглашений
 }
-AWAITING = re.compile(r"(role|rename:\d+|tool:[a-z]+(:[a-z]+)?)?")
+AWAITING = re.compile(r"(role|rename:\d+|tool:[a-z]+(:[a-z]+)?|adm:(give|take|ban|unban))?")
 
 
 class Prefs(namedtuple("Prefs", _PREFS, defaults=_PREFS.values())):
@@ -415,6 +416,16 @@ class Store:
             self.touch(user_id)
             self.db.execute(
                 "UPDATE prefs SET balance = max(0, coalesce(balance, 0) - ?) WHERE user_id = ?",
+                (tokens, user_id),
+            )
+            self.db.commit()
+            return self.get(user_id).balance
+
+    def adjust_balance(self, user_id: int, tokens: int) -> int:
+        """Прибавить токены к балансу (или убавить, если tokens < 0, но не ниже нуля)."""
+        with self.lock:
+            self.db.execute(
+                "UPDATE prefs SET balance = max(0, coalesce(balance, 0) + ?) WHERE user_id = ?",
                 (tokens, user_id),
             )
             self.db.commit()

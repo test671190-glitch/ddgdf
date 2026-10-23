@@ -11,7 +11,7 @@ from models_bot import log, ui
 from models_bot.handlers import Bot
 from models_bot.notify import announce_new_models
 from models_bot.store import Store
-from models_bot.tg import Api, Serial, poll
+from models_bot.tg import Api, Serial, TelegramError, poll
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -37,6 +37,16 @@ def main() -> None:
     api = Api(token)
     me = api("getMe")
     api("setMyCommands", commands=ui.COMMANDS)
+    admins = frozenset(int(i) for i in os.environ.get("ADMIN_IDS", "").split(",") if i.strip())
+    for admin in admins:  # у админа в списке команд есть и /admin
+        try:
+            api(
+                "setMyCommands",
+                commands=ui.COMMANDS + [ui.ADMIN_COMMAND],
+                scope={"type": "chat", "chat_id": admin},
+            )
+        except TelegramError as e:
+            log.info("Команды админа %s не заданы: %s", admin, e)  # ещё не открывал бота
     # Вебхук снимаем, но апдейты не выбрасываем: сообщения, пришедшие во время
     # перезапуска, бот обработает, а не потеряет
     api("deleteWebhook", drop_pending_updates=False)
@@ -46,7 +56,7 @@ def main() -> None:
         target=announce_new_models, args=(api, store), name="announce", daemon=True
     ).start()
     try:
-        poll(api, Serial(Bot(api, store, me["username"]).handle), threading.Event())
+        poll(api, Serial(Bot(api, store, me["username"], admins).handle), threading.Event())
     finally:
         api.close()
         log.info("Бот остановлен")

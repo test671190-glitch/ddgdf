@@ -45,10 +45,13 @@ def _int(text: str) -> int:
 
 
 class Bot:
-    def __init__(self, api: Api, store: Store, username: str = "") -> None:
+    def __init__(
+        self, api: Api, store: Store, username: str = "", admins: frozenset[int] = frozenset()
+    ) -> None:
         self.api = api
         self.store = store
         self.username = username  # имя бота без @: для ссылки-приглашения
+        self.admins = admins  # Telegram id тех, кому открыта тест-панель (/admin)
 
     # Отправка
 
@@ -181,9 +184,6 @@ class Bot:
         if payment := message.get("successful_payment"):
             self.on_payment(uid, payment)  # оплату начисляем и заблокированному
             return
-        if prefs.banned_until > time.time():
-            self.send(uid, ui.banned(prefs.banned_until))
-            return
         attachment = answers.attachment_of(message)
         text = message.get("text") or (message.get("caption") if attachment else None)
         command = (
@@ -191,6 +191,13 @@ class Bot:
             if text and text.startswith("/") and not attachment
             else None
         )
+        # Тест-панель работает и у забаненного админа: иначе он не снимет бан с себя
+        to_panel = uid in self.admins and (
+            command == "admin" or (command is None and prefs.awaiting.startswith("adm:"))
+        )
+        if prefs.banned_until > time.time() and not to_panel:
+            self.send(uid, ui.banned(prefs.banned_until))
+            return
         buttons = ui.KEYBOARD_BUTTONS + ui.OLD_BUTTONS
         if prefs.awaiting and (command is not None or text in buttons):
             # Команда или кнопка внизу отменяют ввод роли или названия, а не становятся им
@@ -207,6 +214,8 @@ class Bot:
         elif prefs.awaiting.startswith("rename:"):
             chat_id = _int(prefs.awaiting.partition(":")[2])
             self.rename_input(uid, chat_id, None if attachment else text)
+        elif prefs.awaiting.startswith("adm:") and uid in self.admins:
+            self.admin_input(uid, prefs.awaiting.partition(":")[2], text)
         elif not text and not attachment:
             self.send(uid, ui.ONLY_TEXT)
         else:
@@ -259,6 +268,8 @@ class Bot:
             self.send(
                 uid, ui.balance_text(prefs, self.store.used_today(uid)), ui.balance_keyboard()
             )
+        elif command == "admin" and uid in self.admins:
+            self.send(uid, ui.admin_text(uid, prefs), ui.admin_keyboard())
         elif command in ("invite", "ref"):
             self.send(uid, *self.invite_screen(uid))
         elif command == "help":
@@ -280,14 +291,22 @@ class Bot:
             return
         uid = query["from"]["id"]
         prefs = self.visitor(uid)
-        if prefs.banned_until > time.time():
+        kind, _, arg = (query.get("data") or "").partition(":")
+        admin = kind == "adm" and uid in self.admins
+        if prefs.banned_until > time.time() and not admin:
             self.toast(query, ui.banned(prefs.banned_until), alert=True)
             return
         if prefs.awaiting:
             # Любая кнопка отменяет ввод роли или названия
             prefs = self.store.update(uid, awaiting="")
-        kind, _, arg = (query.get("data") or "").partition(":")
-        if kind == "nav" and arg in SCREENS:
+        if admin and arg in ui.ADMIN_ACTIONS:
+            self.store.update(uid, awaiting=f"adm:{arg}")
+            self.toast(query, ui.ADMIN_ACTIONS[arg])
+            self.show(query, ui.admin_ask_text(arg), ui.admin_ask_keyboard())
+        elif admin:  # adm:panel
+            self.toast(query, ui.ADMIN)
+            self.show(query, ui.admin_text(uid, prefs), ui.admin_keyboard())
+        elif kind == "nav" and arg in SCREENS:
             self.toast(query, SCREENS[arg])
             self.screen(query, arg, prefs)
         elif kind in ("card", "pick", "chat"):
@@ -360,7 +379,7 @@ class Bot:
         uid = query["from"]["id"]
         chat, model = self.current(uid, prefs)
         if name == "main":
-            text, markup = ui.menu_text(model, chat, prefs), ui.menu_keyboard()
+            text, markup = ui.menu_text(model, chat, prefs), ui.menu_keyboard(uid in self.admins)
         elif name == "models":
             text, markup = ui.models_text(), ui.models_keyboard()
         elif name == "other":
@@ -388,7 +407,7 @@ class Bot:
 
     def send_menu(self, uid: int, prefs: Prefs) -> None:
         chat, model = self.current(uid, prefs)
-        self.send(uid, ui.menu_text(model, chat, prefs), ui.menu_keyboard())
+        self.send(uid, ui.menu_text(model, chat, prefs), ui.menu_keyboard(uid in self.admins))
 
     def send_picker(self, uid: int, prefs: Prefs) -> None:
         _, model = self.current(uid, prefs)
@@ -776,6 +795,50 @@ class Bot:
             log.info("Сообщение о приглашении не дошло до %s: %s", inviter, e)
         except NETWORK_ERRORS as e:
             log.info("Сообщение о приглашении не дошло до %s: %r", inviter, e)
+
+    # Тест-панель: выдать и забрать токены, бан и разбан
+
+    def admin_input(self, uid: int, action: str, text: str | None) -> None:
+        """Ввод для действия панели: «id сумма» (сумма без id — себе), «id [часы]», «id»."""
+        parts = (text or "").replace("_", "").split()
+        numbers = [int(p) for p in parts] if all(p.isdigit() for p in parts) else []
+        if action in ("give", "take") and len(numbers) == 1:
+            numbers = [uid, *numbers]  # только сумма — себе
+        elif action == "ban" and len(numbers) == 1:
+            numbers.append(ui.ADMIN_BAN_HOURS)
+        size = 1 if action == "unban" else 2
+        if (
+            len(numbers) != size
+            or not all(0 < n <= 10**12 for n in numbers)
+            or (action == "ban" and numbers[1] > 24 * 365)  # бан — не дольше года
+        ):
+            self.send(
+                uid,
+                f"{ui.ADMIN_BAD_INPUT}\n\n{ui.admin_ask_text(action)}",
+                ui.admin_ask_keyboard(),
+            )
+            return
+        target, amount = numbers[0], numbers[-1] if size == 2 else 0
+        if not self.store.exists(target):
+            self.send(uid, ui.admin_no_user(target), ui.admin_ask_keyboard())
+            return
+        if action == "give":
+            self.store.adjust_balance(target, amount)
+        elif action == "take":  # забрать можно не больше, чем есть
+            amount = self.store.get(target).balance - self.store.adjust_balance(target, -amount)
+        elif action == "ban":
+            self.store.update(target, banned_until=time.time() + amount * 3600)
+        else:
+            self.store.update(target, banned_until=0)
+        log.info("Тест-панель: %s → %s %s %s", uid, action, target, amount)
+        self.store.update(uid, awaiting="")
+        card = ui.admin_user(
+            target,
+            self.store.get(target),
+            self.store.used_today(target),
+            self.store.referrals(target)[0],
+        )
+        self.send(uid, f"{ui.admin_done(action, amount)}\n\n{card}", ui.admin_keyboard())
 
     # Оплата Stars
 

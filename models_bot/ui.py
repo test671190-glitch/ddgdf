@@ -549,6 +549,75 @@ def banned(until_ts: float) -> str:
     return f"⊘ Аккаунт заблокирован до {until(until_ts)} за накрутку приглашений."
 
 
+# Тест-панель (/admin): только для ADMIN_IDS из .env
+
+ADMIN = "⌖ Тест-панель"
+ADMIN_COMMAND = {"command": "admin", "description": ADMIN}
+ADMIN_ACTIONS = {
+    "give": "+ Выдать токены",
+    "take": "− Забрать токены",
+    "ban": "⊘ Бан",
+    "unban": "✓ Разбан",
+}
+ADMIN_BAN_HOURS = 24  # бан без срока — на сутки
+ADMIN_BAD_INPUT = "Не понял, пришлите числа в таком виде:"
+_ADMIN_ASK = {
+    "give": "<code>id сумма</code> — пользователю, просто <code>сумма</code> — себе.\n"
+    "Например: <code>123456789 50000</code>",
+    "take": "<code>id сумма</code> — у пользователя, просто <code>сумма</code> — у себя. "
+    "Ниже нуля баланс не уйдёт.\nНапример: <code>123456789 50000</code>",
+    "ban": f"<code>id</code> — на {ADMIN_BAN_HOURS} часа, <code>id часы</code> — на свой срок.\n"
+    "Например: <code>123456789 2</code>",
+    "unban": "<code>id</code> пользователя.\nНапример: <code>123456789</code>",
+}
+
+
+def admin_text(uid: int, prefs: Prefs) -> str:
+    return (
+        f"<b>{ADMIN}</b>\n"
+        f"Вы — <code>{uid}</code> · баланс {num(prefs.balance)} токенов\n\n"
+        "Выберите действие ↓"
+    )
+
+
+def admin_ask_text(action: str) -> str:
+    return f"<b>{ADMIN_ACTIONS[action]}</b>\nПришлите {_ADMIN_ASK[action]}"
+
+
+def admin_no_user(target: int) -> str:
+    return f"Пользователя <code>{target}</code> нет: он ещё не открывал бота. Пришлите другой id."
+
+
+def admin_done(action: str, amount: int) -> str:
+    return {
+        "give": f"✓ Выдано {num(amount)} токенов",
+        "take": f"✓ Забрано {num(amount)} токенов",
+        "ban": f"✓ Бан на {plural(amount, 'час', 'часа', 'часов')}",
+        "unban": "✓ Бан снят",
+    }[action]
+
+
+def admin_user(target: int, prefs: Prefs, used_today: int, invited: int) -> str:
+    ban = f"до {until(prefs.banned_until)}" if prefs.banned_until > time.time() else "нет"
+    return (
+        f"<blockquote>Пользователь <code>{target}</code>\n"
+        f"Баланс — {num(prefs.balance)} токенов\n"
+        f"Бесплатно сегодня — осталось {num(max(0, TEST_DAILY_LIMIT - used_today))} "
+        f"из {num(TEST_DAILY_LIMIT)}\n"
+        f"Бан — {ban}\n"
+        f"Приглашено — {num(invited)}</blockquote>"
+    )
+
+
+def admin_keyboard() -> dict:
+    actions = [button(title, f"adm:{key}") for key, title in ADMIN_ACTIONS.items()]
+    return inline(*pairs(actions), [button(TO_MENU, "nav:main")])
+
+
+def admin_ask_keyboard() -> dict:
+    return inline([button(f"← {ADMIN[2:]}", "adm:panel")])
+
+
 ROLE_ONLY_TEXT = "Пришлите инструкцию текстом или нажмите «← Отмена»."
 TITLE_ONLY_TEXT = "Пришлите название текстом или нажмите «← Отмена»."
 STALE_BUTTON = "Кнопка устарела, открываю меню"
@@ -559,11 +628,13 @@ ROLE_RESET = "✓ Роль сброшена"
 # Кнопки под сообщениями
 
 
-def menu_keyboard() -> dict:
+def menu_keyboard(admin: bool = False) -> dict:
+    """admin — добавить кнопку тест-панели (только у админов)."""
     return inline(
         [button(TOOLS_TITLE, "nav:tools"), button(MODELS_TITLE, "nav:models")],
         [button(MY_CHATS, "nav:chats"), button(BALANCE, "nav:balance")],
         [button(SETTINGS, "nav:settings"), button(INVITE, "nav:invite")],
+        [button(ADMIN, "adm:panel")] if admin else [],
     )
 
 

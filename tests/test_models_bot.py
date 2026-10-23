@@ -32,7 +32,7 @@ _ids = itertools.count(1)
 
 # Все символы оформления. Ни у одного нет свойства Emoji в Unicode (emoji-data.txt),
 # поэтому Telegram не заменит их на цветные эмодзи
-DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈❖⊘↻⇄−▍+◐▣◩✶◎✐≡⌘→←↓↳✓·•—«»…×–")
+DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈❖⊘⌖↻⇄−▍+◐▣◩✶◎✐≡⌘→←↓↳✓·•—«»…×–")
 OPUS = MODELS["claude-opus-5-5"]
 
 
@@ -175,6 +175,13 @@ def all_screens() -> list[tuple[str, dict | None]]:
         (ui.invite_text(ui.ref_link("test_bot", 42), 3, 150_000), ui.invite_keyboard("x")),
         (ui.referral_joined("Neo", 50_000, 50_000) + ui.referral_joined(None, 1, 1), None),
         (ui.referral_banned(time.time()) + ui.banned(time.time()), None),
+        (ui.admin_text(42, prefs) + ui.ADMIN_BAD_INPUT + ui.admin_no_user(1), ui.admin_keyboard()),
+        *(
+            (ui.admin_ask_text(a) + ui.admin_done(a, 5), ui.admin_ask_keyboard())
+            for a in ui.ADMIN_ACTIONS
+        ),
+        (ui.admin_user(42, Prefs(banned_until=time.time() + 60), 100, 2), ui.menu_keyboard(True)),
+        (ui.ADMIN_COMMAND["description"], None),
         (ui.cant_read(model, "voice"), ui.answer_keyboard(1)),
         (ui.HELP, ui.other_model_keyboard(1, model.id)),
         (ui.STALE_BUTTON + ui.ONLY_TEXT + ui.ROLE_ONLY_TEXT + ui.TITLE_ONLY_TEXT, None),
@@ -1242,6 +1249,85 @@ def test_joins_spread_out_in_time_are_not_an_attack(bot):
         result = bot.store.add_referral(42, 1000 + i, REF_BONUS, now=start + i)
         assert result.credited == REF_BONUS and not result.banned
     assert bot.store.get(42).banned_until == 0
+
+
+# Тест-панель
+
+
+@pytest.fixture
+def admin(bot):
+    bot.admins = frozenset({42})
+    bot.store.touch(7)
+    return bot
+
+
+def panel(bot: Bot, action: str, text: str) -> str:
+    press(bot, f"adm:{action}")
+    say(bot, text)
+    return bot.api.sent()[-1]
+
+
+def test_panel_is_only_for_admins(bot):
+    say(bot, "/admin")  # не админ — как неизвестная команда: меню
+    assert "⌖ Тест-панель" not in texts(bot.api.last()["reply_markup"])
+    press(bot, "adm:give")
+    say(bot, "100")
+    assert bot.store.get(42).balance == 0
+    bot.admins = frozenset({42})
+    say(bot, "/menu")
+    assert texts(bot.api.last()["reply_markup"])[-1] == "⌖ Тест-панель"
+    say(bot, "/admin")
+    assert texts(bot.api.last()["reply_markup"]) == [
+        "+ Выдать токены",
+        "− Забрать токены",
+        "⊘ Бан",
+        "✓ Разбан",
+        "← В меню",
+    ]
+
+
+def test_panel_gives_and_takes_tokens(admin):
+    assert "Баланс — 50 000" in panel(admin, "give", "50000")  # себе
+    assert "Пользователь <code>7</code>" in panel(admin, "give", "7 1_000")
+    assert admin.store.get(7).balance == 1000
+    assert "Забрано 1 000" in panel(admin, "take", "7 5000")  # не ниже нуля
+    assert admin.store.get(7).balance == 0
+    panel(admin, "take", "20000")
+    assert admin.store.get(42).balance == 30_000
+    assert admin.store.get(42).awaiting == ""
+
+
+def test_panel_bans_and_unbans(admin):
+    assert "Бан на 24 часа" in panel(admin, "ban", "7")
+    assert 23 * 3600 < admin.store.get(7).banned_until - time.time() <= 24 * 3600
+    panel(admin, "ban", "7 2")
+    assert admin.store.get(7).banned_until - time.time() <= 2 * 3600
+    start_as(admin, 7, "Привет")
+    assert admin.api.sent()[-1] == ui.banned(admin.store.get(7).banned_until)
+    assert "Бан — нет" in panel(admin, "unban", "7")
+    start_as(admin, 7, "Привет")
+    assert admin.store.chats(7)
+
+
+def test_banned_admin_can_still_unban_themselves(admin):
+    panel(admin, "ban", "42")
+    say(admin, "Привет")
+    assert admin.api.sent()[-1].startswith("⊘ Аккаунт заблокирован")
+    say(admin, "/admin")
+    panel(admin, "unban", "42")
+    assert admin.store.get(42).banned_until == 0
+
+
+@pytest.mark.parametrize("text", ["abc", "7 x", "7 1 2", "0", "7 0", "7 99999"])
+def test_panel_rejects_bad_input(admin, text):
+    assert panel(admin, "ban", text).startswith(ui.ADMIN_BAD_INPUT)
+    assert admin.store.get(7).banned_until == 0
+    assert admin.store.get(42).awaiting == "adm:ban"  # можно прислать ещё раз
+
+
+def test_panel_unknown_user(admin):
+    assert panel(admin, "give", "555 100") == ui.admin_no_user(555)
+    assert not admin.store.exists(555)
 
 
 # Уведомления о новых моделях
