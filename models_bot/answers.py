@@ -1,6 +1,6 @@
 """Тестовые ответы: настоящие модели не подключены, бот отвечает заготовками.
 
-Заготовка зависит от роли и языка. Подробный ответ добавляет блок с тем, что учтено,
+Заготовка зависит от роли, инструмента и языка. Подробный ответ добавляет блок с тем, что учтено,
 а с включённой памятью бот вспоминает прошлый вопрос. Токены считаются примерно,
 как у настоящих моделей: четыре символа — один токен. Вход — это роль, история
 диалога и сам вопрос, выход — текст ответа.
@@ -9,13 +9,14 @@
 import re
 from collections import namedtuple
 
-from models_bot.catalog import ROLES, Model
+from models_bot.catalog import CUSTOM_ROLE, STYLES, TOOLS, Model
 from models_bot.store import LANGS, Prefs, Turn
 
 TEST_DAILY_LIMIT = 20_000  # бесплатных токенов в сутки на пользователя
 WARN_SHARE = 0.8  # на этой доле лимита — предупреждение
 STREAM_STEPS = 3  # ответ появляется по частям: столько правок сообщения
-STREAM_DELAY = 0.3  # секунд между частями: первая часть уходит сразу
+STREAM_DELAY = 0.25  # секунд между частями: первая часть уходит сразу
+SHORT_ANSWER = 200  # символов: ответ короче печатается в две части, а не в STREAM_STEPS
 
 CANNED: dict[str, dict[str, list[str]]] = {
     "none": {
@@ -32,68 +33,6 @@ CANNED: dict[str, dict[str, list[str]]] = {
             "once the API is connected.",
         ],
     },
-    "lawyer": {
-        "ru": [
-            "С юридической точки зрения ответ зависит от деталей: договора, сроков и сторон. "
-            "В рабочем режиме модель в этой роли сошлётся на нормы закона и отметит риски.",
-        ],
-        "en": [
-            "Legally, the answer depends on the details: the contract, deadlines and parties. "
-            "In live mode the model in this role will cite the law and point out the risks.",
-        ],
-    },
-    "coder": {
-        "ru": [
-            "Набросок решения:\n"
-            '<pre><code class="language-python">def solve(task: str) -&gt; str:\n'
-            "    # здесь будет код от модели\n"
-            '    return "готово"</code></pre>\n'
-            "В роли программиста модель отвечает кратко и с примерами кода.",
-        ],
-        "en": [
-            "A sketch of the solution:\n"
-            '<pre><code class="language-python">def solve(task: str) -&gt; str:\n'
-            "    # the model's code will be here\n"
-            '    return "done"</code></pre>\n'
-            "As a developer, the model answers briefly and with code examples.",
-        ],
-    },
-    "translator": {
-        "ru": [
-            "Здесь появится перевод. В роли переводчика модель сохраняет смысл и стиль "
-            "оригинала и отмечает спорные места.",
-        ],
-        "en": [
-            "The translation will appear here. As a translator, the model keeps the meaning "
-            "and style of the original and marks ambiguous spots.",
-        ],
-    },
-    "marketer": {
-        "ru": [
-            "Три варианта заголовка:\n"
-            "1. Нейросети без лишних шагов\n"
-            "2. Claude и GPT в одном окне\n"
-            "3. Спросите — и получите ответ\n"
-            "В рабочем режиме модель подберёт идеи под ваш продукт.",
-        ],
-        "en": [
-            "Three headline options:\n"
-            "1. AI without extra steps\n"
-            "2. Claude and GPT in one place\n"
-            "3. Ask and get an answer\n"
-            "In live mode the model will tailor ideas to your product.",
-        ],
-    },
-    "editor": {
-        "ru": [
-            "Здесь будет отредактированный текст: без ошибок, короче и понятнее. В рабочем "
-            "режиме модель покажет, что именно изменила.",
-        ],
-        "en": [
-            "The edited text will be here: no mistakes, shorter and clearer. In live mode the "
-            "model will show exactly what it changed.",
-        ],
-    },
     "custom": {
         "ru": [
             "Отвечаю в вашей роли. В рабочем режиме модель будет следовать инструкции из настроек.",
@@ -102,6 +41,63 @@ CANNED: dict[str, dict[str, list[str]]] = {
             "Answering in your role. In live mode the model will follow the instruction "
             "from the settings.",
         ],
+    },
+}
+
+
+# Ответы инструментов: {topic} — тема или текст пользователя, {about} — его фото или файл
+TOOL_CANNED: dict[str, dict[str, str]] = {
+    "styles": {
+        "ru": "Здесь будет ваше {about} в стиле «{style}». В рабочем режиме модель "
+        "перерисует его, сохранив композицию.",
+        "en": "Your {about} in the «{style}» style will be here. In live mode the model "
+        "will redraw it, keeping the composition.",
+    },
+    "draw": {
+        "ru": "Здесь появится картинка 1024×1024 по описанию «{topic}». "
+        "В рабочем режиме модель её нарисует.",
+        "en": "A 1024×1024 picture of «{topic}» will appear here. In live mode the model "
+        "will draw it.",
+    },
+    "edit": {
+        "ru": "Здесь будет ваше {about} с изменениями: «{topic}». Остальное модель оставит "
+        "как есть.",
+        "en": "Your {about} with the changes «{topic}» will be here. The model will keep "
+        "the rest as is.",
+    },
+    "brainstorm": {
+        "ru": "Идеи по теме «{topic}»:\n"
+        "1. Посмотреть на задачу глазами того, для кого она решается\n"
+        "2. Сделать самый простой вариант за день и проверить\n"
+        "3. Спросить тех, кто уже решал похожее\n"
+        "4. Убрать лишнее и оставить главное\n"
+        "5. Совместить две сильные идеи в одну\n"
+        "В рабочем режиме модель предложит идеи именно под вашу задачу.",
+        "en": "Ideas on «{topic}»:\n"
+        "1. Look at it through the eyes of the person it's for\n"
+        "2. Build the simplest version in a day and test it\n"
+        "3. Ask people who solved something similar\n"
+        "4. Cut everything but the core\n"
+        "5. Merge two strong ideas into one\n"
+        "In live mode the model will tailor ideas to your task.",
+    },
+    "explain": {
+        "ru": "Объясняю «{topic}» простыми словами: сначала суть в одной фразе, потом — "
+        "как это устроено по шагам и пример из жизни. В рабочем режиме здесь будет "
+        "настоящее объяснение.",
+        "en": "Explaining «{topic}» simply: the gist in one line, then how it works step "
+        "by step and a real-life example. A real explanation will be here in live mode.",
+    },
+    "rewrite": {
+        "ru": "Переписанный текст появится здесь: короче, яснее и без ошибок. Исходник: «{topic}».",
+        "en": "The rewritten text will appear here: shorter, clearer, no mistakes. "
+        "Original: «{topic}».",
+    },
+    "summary": {
+        "ru": "Главное из «{topic}»:\n• О чём это\n• Что из этого следует\n• Что сделать дальше\n"
+        "В рабочем режиме модель выделит суть по-настоящему.",
+        "en": "The gist of «{topic}»:\n• What it's about\n• What follows from it\n• What to do "
+        "next\nIn live mode the model will extract the real gist.",
     },
 }
 
@@ -156,34 +152,37 @@ def shorten(text: str, limit: int = 60) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def considered(model: Model, prefs: Prefs, history: list[Turn]) -> list[str]:
+def considered(
+    model: Model, prefs: Prefs, history: list[Turn], tool: str | None = None
+) -> list[str]:
     """Что учтено в ответе: показывает, что настройки работают."""
+    key = (tool or "").partition(":")[0]
     if prefs.lang == "en":
-        role = ROLES[prefs.role].title_en if prefs.role in ROLES else "custom"
+        role = "custom" if prefs.role == CUSTOM_ROLE else "no role"
         if not prefs.memory:
             memory = "each question on its own"
         elif history:
             memory = f"{len(history)} messages in context"
         else:
             memory = "new chat"
-        return [
-            f"Model · {model.name}",
-            f"Role · {role}",
-            f"Memory · {memory}",
-            "Language · English",
-        ]
+        points = [f"Model · {model.name}", f"Role · {role}", f"Memory · {memory}"]
+        if key in TOOLS:
+            points.append(f"Tool · {TOOLS[key].title}")
+        return points + ["Language · English"]
     if not prefs.memory:
         memory = "каждый вопрос отдельно"
     elif history:
         memory = "в контексте " + plural(len(history), "сообщение", "сообщения", "сообщений")
     else:
         memory = "новый диалог"
-    return [
+    points = [
         f"Модель · {model.name}",
         f"Роль · {prefs.role_title.lower()}",
         f"Память · {memory}",
-        f"Язык · {LANGS[prefs.lang]}",
     ]
+    if key in TOOLS:
+        points.append(f"Инструмент · {TOOLS[key].title.lower()}")
+    return points + [f"Язык · {LANGS[prefs.lang]}"]
 
 
 # Вложения: что модель «видит» и сколько токенов это стоит (примерно как у настоящих)
@@ -241,14 +240,21 @@ def compose(
     attempt: int = 0,
     brief: bool = False,
     attachment: Attachment | None = None,
+    tool: str | None = None,
 ) -> Reply:
     """history — прошлые сообщения диалога (пусто, если память выключена).
-    attempt — номер перегенерации: другая заготовка; brief — «короче»: одна фраза."""
+    attempt — номер перегенерации: другая заготовка; brief — «короче»: одна фраза;
+    tool — инструмент («brainstorm», «styles:anime»): его готовый промпт и ответ."""
     en = prefs.lang == "en"
-    variants = CANNED[prefs.role][prefs.lang]
-    lines = [f"<b>{escape(model.label)}</b> · {'test reply' if en else 'тестовый ответ'}", ""]
+    key, _, style = (tool or "").partition(":")
+    kit = TOOLS.get(key)
+    if kit:
+        title = f"{kit.mark} {kit.title}" + (f" · вариант {attempt + 1}" if attempt else "")
+    else:
+        title = "test reply" if en else "тестовый ответ"
+    lines = [f"<b>{escape(model.label)}</b> · {escape(title)}", ""]
     asked = [t.text for t in history if t.author == "user"]
-    if asked and not brief:
+    if asked and not brief and not kit:
         quote = escape(shorten(asked[-1]))
         lines += [
             f"I remember our chat: you asked «{quote}»."
@@ -258,14 +264,27 @@ def compose(
         ]
     if attachment:
         lines.append(escape(SEEN[attachment.kind][en].format(about=attachment.about)))
-    body = variants[(sum(map(ord, question)) + attempt) % len(variants)]
+    if kit:
+        topic = shorten(question or (attachment.about if attachment else ""), 80)
+        body = escape(
+            TOOL_CANNED[key]["en" if en else "ru"].format(
+                topic=topic,
+                about=attachment.about if attachment else "фото",
+                style=STYLES.get(style, style),
+            )
+        )
+    else:
+        variants = CANNED[prefs.role][prefs.lang]
+        body = variants[(sum(map(ord, question)) + attempt) % len(variants)]
     lines.append(first_sentence(plain_text(body)) if brief else body)
     if prefs.detail == "full" and not brief:
-        points = considered(model, prefs, history)
+        points = considered(model, prefs, history, tool)
         lines += ["", "<blockquote>" + "\n".join(escape(p) for p in points) + "</blockquote>"]
     html = "\n".join(lines)
     question_tokens = count_tokens(question) + (attachment.tokens if attachment else 0)
     context = count_tokens(prefs.role_prompt) + sum(t.tokens for t in history)
+    if kit:
+        context += count_tokens(kit.prompt)  # готовый промпт инструмента — тоже вход
     return Reply(html, question_tokens, question_tokens + context, count_tokens(plain_text(html)))
 
 

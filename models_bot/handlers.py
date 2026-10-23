@@ -11,7 +11,16 @@
 import time
 
 from models_bot import answers, log, ui
-from models_bot.catalog import CUSTOM_ROLE, MODELS, PACKS, ROLE_MAX_LENGTH, ROLES, Model
+from models_bot.catalog import (
+    CUSTOM_ROLE,
+    MODELS,
+    NO_ROLE,
+    PACKS,
+    ROLE_MAX_LENGTH,
+    STYLES,
+    TOOLS,
+    Model,
+)
 from models_bot.store import (
     DETAILS,
     LANGS,
@@ -82,12 +91,15 @@ class Bot:
         except TelegramError as e:
             log.info("Ответ на кнопку не ушёл: %s", e)  # кнопку нажали слишком давно
 
-    def stream(self, uid: int, html: str, markup: dict, message_id: int | None = None) -> None:
+    def stream(self, uid: int, html: str, markup: dict, message_id: int | None = None) -> float:
         """Ответ «печатается»: первая часть уходит сразу, дальше — правки того же сообщения,
-        а последняя правка ставит разметку и кнопки. message_id — писать в это сообщение."""
+        а последняя правка ставит разметку и кнопки. message_id — писать в это сообщение.
+        Короткий ответ — в две части, длинный — в STREAM_STEPS. Возвращает время первой части."""
         plain = answers.plain_text(html)
-        for step in range(1, answers.STREAM_STEPS):
-            cut = plain.rfind(" ", 0, len(plain) * step // answers.STREAM_STEPS)
+        steps = answers.STREAM_STEPS if len(plain) > answers.SHORT_ANSWER else 2
+        first = 0.0
+        for step in range(1, steps):
+            cut = plain.rfind(" ", 0, len(plain) * step // steps)
             if cut <= 0:
                 continue
             part = answers.escape(plain[:cut].rstrip()) + ui.CURSOR
@@ -97,11 +109,12 @@ class Bot:
                 else:
                     time.sleep(answers.STREAM_DELAY)
                     self.edit(uid, message_id, part)
+                first = first or time.monotonic()
             except TelegramError as e:
                 log.info("Промежуточная часть ответа не ушла: %s", e)
         if message_id is None:
             self.send(uid, html, markup)
-            return
+            return first or time.monotonic()
         time.sleep(answers.STREAM_DELAY)
         try:
             self.edit(uid, message_id, html, markup)
@@ -109,6 +122,7 @@ class Bot:
             if "message is not modified" not in e.description:
                 log.info("Ответ не дописан в сообщение, присылаю заново: %s", e)
                 self.send(uid, html, markup)
+        return first or time.monotonic()
 
     # Текущий чат
 
@@ -176,6 +190,8 @@ class Bot:
             self.command(command, uid, user, prefs)
         elif text in buttons:
             self.keyboard_button(text, uid, prefs)
+        elif prefs.awaiting.startswith("tool:"):
+            self.tool_input(uid, prefs, text, attachment)
         elif prefs.awaiting == "role":
             self.role_input(uid, None if attachment else text)
         elif prefs.awaiting.startswith("rename:"):
@@ -217,6 +233,9 @@ class Bot:
             self.send_picker(uid, prefs)
         elif command == "menu":
             self.send_menu(uid, prefs)
+        elif command == "tools":
+            _, model = self.current(uid, prefs)
+            self.send(uid, ui.tools_text(model), ui.tools_keyboard())
         elif command == "models":
             self.send(uid, ui.models_text(), ui.models_keyboard())
         elif command == "other":
@@ -301,8 +320,14 @@ class Bot:
             self.api("sendInvoice", chat_id=uid, **ui.invoice(PACKS[arg]))
         elif kind == "tgl" and arg in ui.TOGGLES:
             self.toggle(query, arg, prefs)
-        elif kind == "role" and (arg in ROLES or arg == CUSTOM_ROLE):
+        elif kind == "role":
             self.set_role(query, arg)
+        elif kind == "tool" and arg in TOOLS:
+            self.choose_tool(query, arg)
+        elif kind == "style" and arg in STYLES:
+            self.store.update(uid, awaiting=f"tool:styles:{arg}")
+            self.toast(query, STYLES[arg].capitalize())
+            self.show(query, ui.tool_ask_text("styles", arg), ui.tool_ask_keyboard())
         elif kind == "dlg":  # «Новый диалог» под ответами самой первой версии
             self.toast(query)
             self.new_chat(uid, prefs)
@@ -334,6 +359,8 @@ class Bot:
             text, markup = ui.picker_text(model), ui.picker_keyboard(model.id)
         elif name == "role":
             text, markup = ui.role_text(prefs), ui.role_keyboard(prefs)
+        elif name == "tools":
+            text, markup = ui.tools_text(model), ui.tools_keyboard()
         else:
             text, markup = ui.notify_text(), ui.notify_keyboard(prefs)
         self.show(query, text, markup)
@@ -483,15 +510,49 @@ class Bot:
         self.screen(query, "notify" if key.startswith("notify_") else "settings", prefs)
 
     def set_role(self, query: dict, key: str) -> None:
+        """Роль — только своя: написать, изменить или сбросить."""
         uid = query["from"]["id"]
         if key == CUSTOM_ROLE:
             self.store.update(uid, awaiting="role")
             self.toast(query, "✎ Своя роль")
             self.show(query, ui.role_input_text(), ui.role_input_keyboard())
             return
-        prefs = self.store.update(uid, role=key)
-        self.toast(query, f"✓ Роль · {prefs.role_title}")
+        if key == "reset":
+            prefs = self.store.update(uid, role=NO_ROLE, role_text="")
+            self.toast(query, ui.ROLE_RESET)
+        else:  # кнопка готовой роли из прошлой версии
+            prefs = self.store.get(uid)
+            self.toast(query, ui.STALE_BUTTON)
         self.screen(query, "role", prefs)
+
+    # Инструменты
+
+    def choose_tool(self, query: dict, key: str) -> None:
+        tool = TOOLS[key]
+        self.toast(query, f"{tool.mark} {tool.title}")
+        if key == "styles":  # сначала стиль, потом фото
+            self.show(query, ui.styles_text(), ui.styles_keyboard())
+            return
+        self.store.update(query["from"]["id"], awaiting=f"tool:{key}")
+        self.show(query, ui.tool_ask_text(key), ui.tool_ask_keyboard())
+
+    def tool_input(
+        self, uid: int, prefs: Prefs, text: str | None, attachment: answers.Attachment | None
+    ) -> None:
+        """Сообщение для выбранного инструмента: он отвечает в текущем чате один раз."""
+        _, key, style = (prefs.awaiting.split(":") + [""])[:3]
+        needs = TOOLS[key].needs
+        if needs == "photo":
+            fits = attachment is not None and attachment.kind == "image"
+        elif needs == "text":
+            fits = bool(text) and attachment is None
+        else:  # текст или документ
+            fits = bool(text) or (attachment is not None and attachment.kind == "file")
+        if not fits:
+            self.send(uid, ui.tool_needs(key), ui.tool_ask_keyboard())
+            return
+        prefs = self.store.update(uid, awaiting="")
+        self.ask(uid, prefs, text or "", attachment, tool=f"{key}:{style}" if style else key)
 
     def role_input(self, uid: int, text: str | None) -> None:
         if not text:
@@ -530,30 +591,48 @@ class Bot:
                 markup = None if balance else ui.buy_keyboard()
                 self.send(uid, notice, markup)
 
-    def ask(self, uid: int, prefs: Prefs, text: str, attachment: answers.Attachment | None) -> None:
-        """Сообщение модели в текущий чат. Чата нет — он начинается сам."""
+    def ask(
+        self,
+        uid: int,
+        prefs: Prefs,
+        text: str,
+        attachment: answers.Attachment | None,
+        tool: str | None = None,
+    ) -> None:
+        """Сообщение модели в текущий чат. Чата нет — он начинается сам.
+        tool — инструмент, которым ответить («brainstorm», «styles:anime»)."""
+        started_at = time.monotonic()
         chat, model = self.current(uid, prefs)
         if attachment and attachment.kind not in model.inputs:
             self.send(uid, ui.cant_read(model, attachment.kind))
             return
-        if self.out_of_tokens(uid, prefs):
+        used = self.store.used_today(uid)
+        if not answers.can_answer(used, prefs.balance):
+            self.send(uid, answers.limit_reached(), ui.buy_keyboard())
             return
         started = chat is None
         if started:
             chat, _ = self.store.new_chat(uid, model.id)
             prefs = self.store.update(uid, active=chat.id)
-        used = self.store.used_today(uid)
         history = self.store.history(chat.id) if prefs.memory else []
-        reply = answers.compose(model, prefs, text, history, attachment=attachment)
+        reply = answers.compose(model, prefs, text, history, attachment=attachment, tool=tool)
         packed = answers.pack_attachment(attachment)
-        reply_id = self.store.add_reply(uid, chat.id, text, model.id, packed)
+        reply_id = self.store.add_reply(uid, chat.id, text, model.id, packed, tool)
         html = self.finish(prefs, reply, reply.html, used)
         if started:
             html = f"<i>{ui.NEW_CHAT}</i>\n" + html
-        self.stream(uid, html, ui.answer_keyboard(reply_id))
+        first = self.stream(uid, html, ui.answer_keyboard(reply_id))
+        log.info(
+            "Ответ %s: первая часть через %.2f с, весь — через %.2f с",
+            model.id,
+            first - started_at,
+            time.monotonic() - started_at,
+        )
         # Токены и история записываются, только когда ответ дошёл
         self.pay(uid, prefs, reply.total)
-        asked = f"[{attachment.about}] {text}".strip() if attachment else text
+        label = f"[{TOOLS[tool.partition(':')[0]].title}] " if tool else ""
+        about = f"[{attachment.about}] " if attachment else ""
+        asked = f"{label}{about}{text}".strip()
         self.store.note_question(chat.id, asked)
         if prefs.memory:
             self.store.remember(
@@ -614,6 +693,7 @@ class Bot:
             attempt=attempt,
             brief=action == "s",
             attachment=attachment,
+            tool=answer.tool,
         )
         used = self.store.used_today(uid)
         html = self.finish(prefs, reply, reply.html, used)
@@ -673,4 +753,5 @@ SCREENS = {
     "role": "⛭ Роль",
     "notify": "⛭ Уведомления",
     "balance": ui.BALANCE,
+    "tools": ui.TOOLS_TITLE,
 }

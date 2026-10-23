@@ -122,6 +122,8 @@ class Api:
 
     def _connect(self):
         sock = socket.create_connection((self.host, self.port), timeout=REQUEST_TIMEOUT)
+        # Запрос уходит одним куском: без алгоритма Нейгла он не ждёт подтверждений
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         if self.tls:
             try:
                 sock = self.tls.wrap_socket(sock, server_hostname=self.host)

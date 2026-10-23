@@ -32,7 +32,8 @@ from models_bot.catalog import (
     OTHER_MODELS,
     PACKS,
     ROLE_MAX_LENGTH,
-    ROLES,
+    STYLES,
+    TOOLS,
     TOP_MODELS,
     Model,
 )
@@ -45,6 +46,7 @@ MY_CHATS = "☰ Мои чаты"
 NEW_CHAT = "+ Новый чат"
 MODEL = "⁂ Модель"
 MENU = "⛭ Меню"
+TOOLS_TITLE = "⌘ Инструменты"
 KEYBOARD_BUTTONS = (NEW_CHAT, MY_CHATS, MODEL, MENU)  # клавиатура внизу
 # Кнопки клавиатуры прошлой версии: у кого-то она ещё на экране
 OLD_CHATS, OLD_NEW_DIALOG, OLD_END_CHAT = "☰ Чаты", "↺ Новый диалог", "■ Завершить чат"
@@ -64,6 +66,7 @@ COMMANDS = [
     {"command": "new", "description": "+ Новый чат"},
     {"command": "chats", "description": "☰ Мои чаты: переключиться"},
     {"command": "model", "description": "⁂ Сменить модель"},
+    {"command": "tools", "description": "⌘ Инструменты: идеи, пересказ, картинки"},
     {"command": "menu", "description": "⛭ Меню"},
     {"command": "settings", "description": "⛭ Настройки"},
     {"command": "balance", "description": "◈ Мой баланс и пополнение"},
@@ -366,12 +369,16 @@ def settings_text(prefs: Prefs, used_today: int) -> str:
 
 
 def role_text(prefs: Prefs, note: str = "") -> str:
-    prompt = escape(prefs.role_prompt) if prefs.role_prompt else "Модель отвечает без инструкции."
     head = f"{note}\n\n" if note else ""
+    now = (
+        f"<blockquote>{escape(prefs.role_prompt)}</blockquote>"
+        if prefs.role_prompt
+        else "Сейчас не задана: модель отвечает без особой инструкции."
+    )
     return (
         f"{head}<b>⛭ Роль</b>\n"
-        "Инструкция, которую модель получает перед каждым вопросом.\n\n"
-        f"<blockquote><b>{escape(prefs.role_title)}</b>\n{prompt}</blockquote>"
+        "Своя инструкция для модели — она получает её перед каждым вопросом во всех чатах.\n\n"
+        f"{now}"
     )
 
 
@@ -379,8 +386,8 @@ def role_input_text() -> str:
     return (
         "<b>✎ Своя роль</b>\n"
         f"Пришлите инструкцию одним сообщением, до {ROLE_MAX_LENGTH} символов.\n\n"
-        "<blockquote>Например: отвечай как юрист по трудовому праву и ссылайся "
-        "на статьи ТК РФ.</blockquote>"
+        "<blockquote>Например: «Ты — опытный маркетолог. Отвечай коротко, по пунктам, "
+        "с примерами для малого бизнеса».</blockquote>"
     )
 
 
@@ -417,9 +424,38 @@ HELP = (
     f"<blockquote>{NEW_CHAT} или /new — начать с чистого листа\n"
     f"{MY_CHATS} или /chats — переключиться на прошлый чат\n"
     f"{MODEL} или /model — сменить модель в текущем чате\n"
-    f"{MENU} или /menu — все модели, настройки, баланс\n"
+    f"{MENU} или /menu — инструменты, модели, настройки, баланс\n"
+    f"{TOOLS_TITLE} или /tools — идеи, объяснение, пересказ, картинки\n"
     "/balance — баланс и пополнение</blockquote>"
 )
+
+
+def tools_text(model: Model) -> str:
+    return (
+        f"<b>{TOOLS_TITLE}</b>\n"
+        f"Готовые задачи для {escape(model.label)} в текущем чате. "
+        "Выберите, затем пришлите текст или фото ↓"
+    )
+
+
+def styles_text() -> str:
+    return f"<b>{TOOLS['styles'].mark} {TOOLS['styles'].title}</b>\nВыберите стиль ↓"
+
+
+def tool_ask_text(tool_key: str, style: str = "") -> str:
+    tool = TOOLS[tool_key]
+    ask = tool.ask.format(style=STYLES.get(style, ""))
+    return f"<b>{tool.mark} {tool.title}</b>\n{escape(ask)}"
+
+
+def tool_needs(tool_key: str) -> str:
+    tool = TOOLS[tool_key]
+    what = {"photo": "фото", "text": "текст", "text_or_file": "текст или файл"}[tool.needs]
+    return (
+        f"Для «{tool.title}» нужно прислать {what}. Пришлите его или выберите другое "
+        f"в «{TOOLS_TITLE}»."
+    )
+
 
 ONLY_TEXT = "Такое пока не понимаю: пришлите текст, фото, PDF или голосовое."
 
@@ -473,6 +509,7 @@ ROLE_ONLY_TEXT = "Пришлите инструкцию текстом или н
 TITLE_ONLY_TEXT = "Пришлите название текстом или нажмите «← Отмена»."
 STALE_BUTTON = "Кнопка устарела, открываю меню"
 ROLE_SAVED = "✓ Своя роль сохранена"
+ROLE_RESET = "✓ Роль сброшена"
 
 
 # Кнопки под сообщениями
@@ -480,9 +517,24 @@ ROLE_SAVED = "✓ Своя роль сохранена"
 
 def menu_keyboard() -> dict:
     return inline(
-        [button(MODELS_TITLE, "nav:models"), button(SETTINGS, "nav:settings")],
+        [button(TOOLS_TITLE, "nav:tools"), button(MODELS_TITLE, "nav:models")],
         [button(MY_CHATS, "nav:chats"), button(BALANCE, "nav:balance")],
+        [button(SETTINGS, "nav:settings")],
     )
+
+
+def tools_keyboard() -> dict:
+    tools = [button(f"{t.mark} {t.title}", f"tool:{t.key}") for t in TOOLS.values()]
+    return inline(*pairs(tools + [button(TO_MENU, "nav:main")]))
+
+
+def styles_keyboard() -> dict:
+    styles = [button(name.capitalize(), f"style:{key}") for key, name in STYLES.items()]
+    return inline(*pairs(styles), [button(f"← {TOOLS_TITLE[2:]}", "nav:tools")])
+
+
+def tool_ask_keyboard() -> dict:
+    return inline([button(f"← {TOOLS_TITLE[2:]}", "nav:tools")])
 
 
 def answer_keyboard(reply_id: int) -> dict:
@@ -625,13 +677,13 @@ def settings_keyboard(prefs: Prefs) -> dict:
 
 
 def role_keyboard(prefs: Prefs) -> dict:
-    roles = [
-        button(f"{r.title}  ✓" if r.key == prefs.role else r.title, f"role:{r.key}")
-        for r in ROLES.values()
-    ]
-    custom = "✎ Своя роль" + ("  ✓" if prefs.role == CUSTOM_ROLE else "")
+    if prefs.role == CUSTOM_ROLE:
+        return inline(
+            [button("✎ Изменить", f"role:{CUSTOM_ROLE}"), button("✕ Сбросить", "role:reset")],
+            [button(BACK, "nav:settings")],
+        )
     return inline(
-        *pairs(roles), [button(custom, f"role:{CUSTOM_ROLE}")], [button(BACK, "nav:settings")]
+        [button("✎ Написать свою роль", f"role:{CUSTOM_ROLE}")], [button(BACK, "nav:settings")]
     )
 
 

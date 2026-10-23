@@ -12,7 +12,15 @@ import threading
 import time
 from collections import namedtuple
 
-from models_bot.catalog import CUSTOM_ROLE, DEFAULT_MODEL, MODELS, ROLES
+from models_bot.catalog import (
+    CUSTOM_ROLE,
+    DEFAULT_MODEL,
+    LEGACY_ROLES,
+    MODELS,
+    NO_ROLE,
+    STYLES,
+    TOOLS,
+)
 
 LANGS = {"ru": "русский", "en": "английский"}
 DETAILS = {"full": "подробные", "short": "краткие"}
@@ -23,20 +31,21 @@ _PREFS = {
     "model": DEFAULT_MODEL,  # основная модель: с ней /chat начинает новый чат
     "lang": "ru",
     "detail": "full",
-    "role": "none",  # ключ из catalog.ROLES или CUSTOM_ROLE
+    "role": NO_ROLE,  # NO_ROLE или CUSTOM_ROLE — своя роль из role_text
     "role_text": "",  # инструкция своей роли
     "memory": True,
     "show_usage": True,
     "notify_models": True,
     "notify_limit": True,
     "chat": "",  # прежняя версия: модель единственного чата; переносится в chats при запуске
-    "awaiting": "",  # "role" или "rename:<id чата>" — что станет следующим сообщением
+    # Что станет следующим сообщением: "role", "rename:<чат>" или "tool:<инструмент>[:<стиль>]"
+    "awaiting": "",
     "blocked": False,  # пользователь заблокировал бота: уведомления ему не шлём
     "active": 0,  # id открытого чата; 0 — чат не открыт
     "balance": 0,  # купленные токены: тратятся, когда кончился бесплатный дневной лимит
     "kb": 0,  # версия клавиатуры внизу, которую пользователь уже получил
 }
-AWAITING = re.compile(r"(role|rename:\d+)?")
+AWAITING = re.compile(r"(role|rename:\d+|tool:[a-z]+(:[a-z]+)?)?")
 
 
 class Prefs(namedtuple("Prefs", _PREFS, defaults=_PREFS.values())):
@@ -44,11 +53,11 @@ class Prefs(namedtuple("Prefs", _PREFS, defaults=_PREFS.values())):
 
     @property
     def role_prompt(self) -> str:
-        return self.role_text if self.role == CUSTOM_ROLE else ROLES[self.role].prompt
+        return self.role_text if self.role == CUSTOM_ROLE else ""
 
     @property
     def role_title(self) -> str:
-        return "Своя роль" if self.role == CUSTOM_ROLE else ROLES[self.role].title
+        return "Своя роль" if self.role == CUSTOM_ROLE else "Без роли"
 
 
 FIELDS = Prefs._fields
@@ -58,7 +67,8 @@ Turn = namedtuple("Turn", "author text tokens")  # author: user | bot
 Chat = namedtuple("Chat", "id user_id model title messages updated")
 CHAT_COLUMNS = "id, user_id, model, title, messages, updated"
 # Ответ модели, к которому привязаны кнопки под ним; attempt — сколько раз перегенерирован
-Answer = namedtuple("Answer", "id user_id chat_id question model attempt attachment")
+# tool — инструмент, которым получен ответ: "brainstorm" или "styles:anime"
+Answer = namedtuple("Answer", "id user_id chat_id question model attempt attachment tool")
 REPLIES_LIMIT = 100  # ответов с рабочими кнопками на пользователя
 
 
@@ -102,7 +112,14 @@ class Store:
         self._add_columns("prefs", FIELDS)
         self._add_columns("history", ["chat_id"])
         self.db.execute("CREATE INDEX IF NOT EXISTS history_chat ON history (chat_id, id)")
+        self._add_columns("replies", ["tool"])
         self._migrate_single_chat()
+        # Готовых ролей больше нет: выбранная становится своей ролью с тем же текстом
+        for key, prompt in LEGACY_ROLES.items():
+            self.db.execute(
+                "UPDATE prefs SET role = ?, role_text = ? WHERE role = ?",
+                (CUSTOM_ROLE, prompt, key),
+            )
         self.db.commit()
 
     def _add_columns(self, table: str, names) -> None:
@@ -182,10 +199,14 @@ class Store:
             changes["lang"] = DEFAULTS.lang
         if prefs.detail not in DETAILS:
             changes["detail"] = DEFAULTS.detail
-        if prefs.role not in ROLES and not (prefs.role == CUSTOM_ROLE and prefs.role_text):
+        if prefs.role != NO_ROLE and not (prefs.role == CUSTOM_ROLE and prefs.role_text):
             changes["role"] = DEFAULTS.role
         if not isinstance(prefs.awaiting, str) or not AWAITING.fullmatch(prefs.awaiting):
             changes["awaiting"] = ""
+        elif prefs.awaiting.startswith("tool:"):
+            _, key, style = (prefs.awaiting.split(":") + [""])[:3]
+            if key not in TOOLS or (style and style not in STYLES):
+                changes["awaiting"] = ""  # инструмент или стиль убрали
         if not isinstance(prefs.active, int):
             changes["active"] = 0
         return prefs._replace(**changes)
@@ -323,13 +344,19 @@ class Store:
     # Ответы под кнопками
 
     def add_reply(
-        self, user_id: int, chat_id: int, question: str, model: str, attachment: str | None
+        self,
+        user_id: int,
+        chat_id: int,
+        question: str,
+        model: str,
+        attachment: str | None,
+        tool: str | None = None,
     ) -> int:
         with self.lock:
             reply_id = self.db.execute(
-                "INSERT INTO replies (user_id, chat_id, question, model, attempt, attachment)"
-                " VALUES (?, ?, ?, ?, 0, ?)",
-                (user_id, chat_id, question, model, attachment),
+                "INSERT INTO replies (user_id, chat_id, question, model, attempt, attachment, tool)"
+                " VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (user_id, chat_id, question, model, attachment, tool),
             ).lastrowid
             self.db.execute(
                 "DELETE FROM replies WHERE user_id = ? AND id NOT IN "
@@ -342,7 +369,7 @@ class Store:
     def reply(self, reply_id: int) -> "Answer | None":
         with self.lock:
             row = self.db.execute(
-                "SELECT id, user_id, chat_id, question, model, attempt, attachment"
+                "SELECT id, user_id, chat_id, question, model, attempt, attachment, tool"
                 " FROM replies WHERE id = ?",
                 (reply_id,),
             ).fetchone()

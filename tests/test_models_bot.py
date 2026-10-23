@@ -13,7 +13,16 @@ import time
 import pytest
 
 from models_bot import answers, notify, tg, ui
-from models_bot.catalog import CUSTOM_ROLE, MODELS, OTHER_MODELS, ROLES, TOP_MODELS
+from models_bot.catalog import (
+    CUSTOM_ROLE,
+    LEGACY_ROLES,
+    MODELS,
+    NO_ROLE,
+    OTHER_MODELS,
+    STYLES,
+    TOOLS,
+    TOP_MODELS,
+)
 from models_bot.handlers import KEYBOARD_VERSION, SCREENS, Bot
 from models_bot.store import HISTORY_LIMIT, MAX_CHATS, Chat, Prefs, Store, Turn
 
@@ -21,7 +30,7 @@ _ids = itertools.count(1)
 
 # Все символы оформления. Ни у одного нет свойства Emoji в Unicode (emoji-data.txt),
 # поэтому Telegram не заменит их на цветные эмодзи
-DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈↻⇄−▍+→←↓↳✓·—«»…×")
+DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈↻⇄−▍+◐▣◩✶◎✐≡⌘→←↓↳✓·•—«»…×–")
 OPUS = MODELS["claude-opus-5-5"]
 
 
@@ -170,11 +179,22 @@ def all_screens() -> list[tuple[str, dict | None]]:
     ]
     turns = [Turn("user", "Как дела?", 3), Turn("bot", "Хорошо", 2)]
     photo = answers.Attachment("image", "изображение 10×10", 800)
-    for role in [*ROLES, CUSTOM_ROLE]:
+    for role in (NO_ROLE, CUSTOM_ROLE):
         for lang in ("ru", "en"):
             p = Prefs(role=role, role_text="Будь краток", lang=lang)
             reply = answers.compose(model, p, "Привет", turns, attachment=photo)
             screens.append((reply.html + answers.usage_line(reply, 100, 5), None))
+            for tool in [*TOOLS, *(f"styles:{s}" for s in STYLES)]:
+                reply = answers.compose(
+                    model, p, "Тема", turns, attempt=1, attachment=photo, tool=tool
+                )
+                screens.append((reply.html, None))
+    screens += [
+        (ui.tools_text(model), ui.tools_keyboard()),
+        (ui.styles_text(), ui.styles_keyboard()),
+        *((ui.tool_ask_text(k, "anime") + ui.tool_needs(k), ui.tool_ask_keyboard()) for k in TOOLS),
+        (ui.role_text(Prefs()) + ui.ROLE_RESET, ui.role_keyboard(Prefs())),
+    ]
     return screens
 
 
@@ -190,8 +210,14 @@ def test_keyboard_below_has_the_four_actions():
     )
 
 
-def test_menu_has_models_settings_chats_and_balance():
-    assert texts(ui.menu_keyboard()) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты", "◈ Мой баланс"]
+def test_menu_has_tools_models_chats_balance_and_settings():
+    assert texts(ui.menu_keyboard()) == [
+        "⌘ Инструменты",
+        "⁂ Модели",
+        "☰ Мои чаты",
+        "◈ Мой баланс",
+        "⛭ Настройки",
+    ]
 
 
 def test_models_menu_lists_claude_then_gpt_then_other():
@@ -423,7 +449,8 @@ def test_every_screen_and_card_opens(bot):
     ("text", "first_button"),
     [
         ("/start", "+ Новый чат"),  # приветствие — с клавиатурой внизу
-        ("/menu", "⁂ Модели"),
+        ("/menu", "⌘ Инструменты"),
+        ("/tools", "◐ Фотостили"),
         ("/model", "✻ Claude Opus 5.5  ✓"),
         ("/models", "✻ Claude Opus 5.5"),
         ("/other", "⌬ GPT-6 Sol"),
@@ -432,7 +459,7 @@ def test_every_screen_and_card_opens(bot):
         ("/balance", "+ 100 000 токенов · 50 Stars"),
         ("/start@modelsbot", "+ Новый чат"),
         ("/unknown", "+ Новый чат"),
-        (ui.MENU, "⁂ Модели"),
+        (ui.MENU, "⌘ Инструменты"),
         (ui.MODEL, "✻ Claude Opus 5.5  ✓"),
         (ui.MY_CHATS, "+ Новый чат"),
     ],
@@ -694,12 +721,111 @@ def test_chats_list_pages(bot):
     assert len([d for d in data(second) if d.startswith("open:")]) == 2
 
 
-def test_preset_role_changes_answers(bot):
+def test_role_is_only_your_own_prompt(bot):
+    press(bot, "nav:role")
+    shown = bot.api.last()
+    assert "Сейчас не задана" in shown["text"]
+    assert texts(shown["reply_markup"]) == ["✎ Написать свою роль", "← Назад"]
+    press(bot, f"role:{CUSTOM_ROLE}")
+    say(bot, "Отвечай как маркетолог")
+    assert texts(bot.api.final()["reply_markup"]) == ["✎ Изменить", "✕ Сбросить", "← Назад"]
+    press(bot, "role:reset")
+    prefs = bot.store.get(42)
+    assert (prefs.role, prefs.role_text) == (NO_ROLE, "")
+    assert bot.api.named("answerCallbackQuery")[-1]["text"] == ui.ROLE_RESET
+
+
+def test_old_preset_role_buttons_change_nothing(bot):
     press(bot, "role:lawyer")
-    assert bot.store.get(42).role == "lawyer"
-    assert "Юрист  ✓" in texts(bot.api.last()["reply_markup"])
-    say(bot, "Можно ли расторгнуть договор?")
-    assert "С юридической точки зрения" in answer_text(bot)
+    assert bot.api.named("answerCallbackQuery")[-1]["text"] == ui.STALE_BUTTON
+    assert bot.store.get(42).role == NO_ROLE
+
+
+def test_chosen_preset_role_becomes_your_own(tmp_path):
+    """Кто выбрал готовую роль в прошлой версии, сохраняет её как свою: ответы не меняются."""
+    store = Store(tmp_path / "s.db")
+    store.update(7, memory=True)
+    store.db.execute("UPDATE prefs SET role = 'marketer' WHERE user_id = 7")
+    store.db.commit()
+    prefs = Store(tmp_path / "s.db").get(7)
+    assert (prefs.role, prefs.role_text) == (CUSTOM_ROLE, LEGACY_ROLES["marketer"])
+
+
+# Инструменты
+
+
+def test_tools_are_a_compact_grid(bot):
+    say(bot, "/tools")
+    rows = bot.api.final()["reply_markup"]["inline_keyboard"]
+    assert [len(row) for row in rows] == [2, 2, 2, 2]  # 7 инструментов и «В меню»
+    assert [b["text"] for b in rows[0]] == ["◐ Фотостили", "▣ Нарисовать"]
+    assert rows[-1][-1]["callback_data"] == "nav:main"
+
+
+def test_text_tool_answers_once_in_the_current_chat(bot):
+    say(bot, "Обычный вопрос")
+    press(bot, "tool:brainstorm")
+    assert bot.store.get(42).awaiting == "tool:brainstorm"
+    assert "Напишите тему или задачу" in bot.api.last()["text"]
+    say(bot, "Как назвать кофейню")
+    text = answer_text(bot)
+    assert text.startswith("<b>✻ Claude Opus 5.5</b> · ✶ Брейншторм")
+    assert "Идеи по теме «Как назвать кофейню»" in text
+    assert "Инструмент · брейншторм" in text
+    assert bot.store.get(42).awaiting == ""
+    assert len(bot.store.chats(42)) == 1  # тот же чат
+    assert history(bot)[-2].text == "[Брейншторм] Как назвать кофейню"
+    say(bot, "А ещё?")  # дальше — обычный ответ
+    assert "тестовый ответ" in answer_text(bot)
+
+
+def test_tool_waits_for_the_right_input(bot):
+    press(bot, "tool:brainstorm")
+    say(bot, None, photo=[{"file_id": "a", "width": 10, "height": 10}])
+    assert bot.api.sent()[-1] == ui.tool_needs("brainstorm")
+    assert bot.store.get(42).awaiting == "tool:brainstorm"  # ждём дальше
+
+
+def test_photo_styles(bot):
+    press(bot, "tool:styles")
+    assert data(bot.api.last()["reply_markup"])[0] == "style:anime"
+    press(bot, "style:anime")
+    assert "в стиле «аниме»" in bot.api.last()["text"]
+    say(bot, "без фото")
+    assert bot.api.sent()[-1] == ui.tool_needs("styles")
+    say(bot, None, photo=[{"file_id": "a", "width": 800, "height": 600}])
+    assert "Здесь будет ваше изображение 800×600 в стиле «аниме»" in answer_text(bot)
+
+
+def test_summary_takes_a_pdf(bot):
+    press(bot, "tool:summary")
+    pdf = {
+        "file_id": "d",
+        "file_name": "отчёт.pdf",
+        "file_size": 2048,
+        "mime_type": "application/pdf",
+    }
+    say(bot, None, document=pdf)
+    assert "≡ Пересказ" in answer_text(bot)
+    assert "Главное из «файл «отчёт.pdf», 2 КБ»" in answer_text(bot)
+
+
+def test_regenerating_a_tool_answer_keeps_the_tool(bot):
+    press(bot, "tool:explain")
+    say(bot, "Что такое инфляция")
+    answer_button(bot, "r")
+    assert "◎ Объяснить тему · вариант 2" in answer_text(bot)
+    assert "Объясняю «Что такое инфляция»" in answer_text(bot)
+
+
+def test_tool_is_cancelled_by_keyboard_or_any_button(bot):
+    press(bot, "tool:rewrite")
+    say(bot, ui.MY_CHATS)
+    assert bot.store.get(42).awaiting == ""
+    press(bot, "tool:rewrite")
+    press(bot, "nav:tools")  # «← Инструменты»
+    say(bot, "Привет")
+    assert "тестовый ответ" in answer_text(bot)
 
 
 def test_custom_role_is_saved_from_next_message(bot):
