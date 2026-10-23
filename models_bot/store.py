@@ -33,6 +33,7 @@ _PREFS = {
     "awaiting": "",  # "role" или "rename:<id чата>" — что станет следующим сообщением
     "blocked": False,  # пользователь заблокировал бота: уведомления ему не шлём
     "active": 0,  # id открытого чата; 0 — чат не открыт
+    "balance": 0,  # купленные токены: тратятся, когда кончился бесплатный дневной лимит
 }
 AWAITING = re.compile(r"(role|rename:\d+)?")
 
@@ -55,6 +56,9 @@ Turn = namedtuple("Turn", "author text tokens")  # author: user | bot
 # messages — сколько вопросов задано в чате; updated — время последнего, unix
 Chat = namedtuple("Chat", "id user_id model title messages updated")
 CHAT_COLUMNS = "id, user_id, model, title, messages, updated"
+# Ответ модели, к которому привязаны кнопки под ним; attempt — сколько раз перегенерирован
+Answer = namedtuple("Answer", "id user_id chat_id question model attempt attachment")
+REPLIES_LIMIT = 100  # ответов с рабочими кнопками на пользователя
 
 
 def today() -> str:
@@ -84,6 +88,14 @@ class Store:
             "CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, tokens INTEGER,"
             " PRIMARY KEY (user_id, day));"
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);"
+            # Ответы: по ним работают кнопки «перегенерировать», «другая модель», «короче»
+            "CREATE TABLE IF NOT EXISTS replies (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " user_id INTEGER, chat_id INTEGER, question TEXT, model TEXT, attempt INTEGER,"
+            " attachment TEXT);"
+            "CREATE INDEX IF NOT EXISTS replies_user ON replies (user_id, id);"
+            # Оплаты Stars: charge_id нужен для возврата и чтобы не начислить дважды
+            "CREATE TABLE IF NOT EXISTS payments (charge_id TEXT PRIMARY KEY, user_id INTEGER,"
+            " pack TEXT, stars INTEGER, tokens INTEGER, created REAL);"
         )
         # Новая настройка — новый столбец. У прежних строк в нём NULL: это значение по умолчанию
         self._add_columns("prefs", FIELDS)
@@ -290,6 +302,93 @@ class Store:
                 (chat_id, chat_id, HISTORY_LIMIT),
             )
             self.db.commit()
+
+    def replace_last_answer(self, chat_id: int, text: str, tokens: int) -> None:
+        """Перегенерированный ответ заменяет прошлый в памяти чата."""
+        with self.lock:
+            self.db.execute(
+                "UPDATE history SET text = ?, tokens = ? WHERE id ="
+                " (SELECT max(id) FROM history WHERE chat_id = ? AND author = 'bot')",
+                (text, tokens, chat_id),
+            )
+            self.db.commit()
+
+    # Ответы под кнопками
+
+    def add_reply(
+        self, user_id: int, chat_id: int, question: str, model: str, attachment: str | None
+    ) -> int:
+        with self.lock:
+            reply_id = self.db.execute(
+                "INSERT INTO replies (user_id, chat_id, question, model, attempt, attachment)"
+                " VALUES (?, ?, ?, ?, 0, ?)",
+                (user_id, chat_id, question, model, attachment),
+            ).lastrowid
+            self.db.execute(
+                "DELETE FROM replies WHERE user_id = ? AND id NOT IN "
+                "(SELECT id FROM replies WHERE user_id = ? ORDER BY id DESC LIMIT ?)",
+                (user_id, user_id, REPLIES_LIMIT),
+            )
+            self.db.commit()
+        return reply_id
+
+    def reply(self, reply_id: int) -> "Answer | None":
+        with self.lock:
+            row = self.db.execute(
+                "SELECT id, user_id, chat_id, question, model, attempt, attachment"
+                " FROM replies WHERE id = ?",
+                (reply_id,),
+            ).fetchone()
+        return Answer(*row) if row else None
+
+    def update_reply(self, reply_id: int, **changes) -> None:
+        sets = ", ".join(f"{name} = ?" for name in changes)
+        with self.lock:
+            self.db.execute(
+                f"UPDATE replies SET {sets} WHERE id = ?", (*changes.values(), reply_id)
+            )
+            self.db.commit()
+
+    def last_reply_id(self, chat_id: int) -> int:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT max(id) FROM replies WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        return row[0] or 0
+
+    # Баланс и оплаты
+
+    def charge(self, user_id: int, tokens: int) -> int:
+        """Списать купленные токены (не ниже нуля). Возвращает остаток."""
+        with self.lock:
+            self.touch(user_id)
+            self.db.execute(
+                "UPDATE prefs SET balance = max(0, coalesce(balance, 0) - ?) WHERE user_id = ?",
+                (tokens, user_id),
+            )
+            self.db.commit()
+            return self.get(user_id).balance
+
+    def credit(
+        self, charge_id: str, user_id: int, pack: str, stars: int, tokens: int
+    ) -> int | None:
+        """Начислить оплату. None — эта оплата уже начислена. Иначе — новый баланс."""
+        with self.lock:
+            self.touch(user_id)
+            try:
+                self.db.execute(
+                    "INSERT INTO payments (charge_id, user_id, pack, stars, tokens, created)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (charge_id, user_id, pack, stars, tokens, time.time()),
+                )
+            except sqlite3.IntegrityError:
+                return None
+            self.db.execute(
+                "UPDATE prefs SET balance = coalesce(balance, 0) + ? WHERE user_id = ?",
+                (tokens, user_id),
+            )
+            self.db.commit()
+            return self.get(user_id).balance
 
     # Расход токенов за сутки (UTC)
 

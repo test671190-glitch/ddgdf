@@ -21,7 +21,7 @@ _ids = itertools.count(1)
 
 # Все символы оформления. Ни у одного нет свойства Emoji в Unicode (emoji-data.txt),
 # поэтому Telegram не заменит их на цветные эмодзи
-DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■→←↓↳✓·—«»…")
+DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈↻⇄−▍→←↓↳✓·—«»…×")
 OPUS = MODELS["claude-opus-5-5"]
 
 
@@ -29,20 +29,32 @@ class FakeApi:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.fail: dict[str, Exception] = {}
+        self.messages: dict[int, dict] = {}  # id → параметры последней отправки или правки
 
     def __call__(self, method: str, _timeout: float = 0, **params):
         self.calls.append((method, params))
         if method in self.fail:
             raise self.fail[method]
-        if method in ("sendMessage", "editMessageText"):
-            return {"message_id": next(_ids)}
+        if method == "sendMessage":
+            message_id = next(_ids)
+            self.messages[message_id] = params
+            return {"message_id": message_id}
+        if method == "editMessageText":
+            if params["message_id"] in self.messages:
+                self.messages[params["message_id"]] = params
+            return {"message_id": params["message_id"]}
         return True
 
     def named(self, method: str) -> list[dict]:
         return [p for m, p in self.calls if m == method]
 
     def sent(self) -> list[str]:
-        return [p["text"] for p in self.named("sendMessage")]
+        """Тексты отправленных сообщений в их нынешнем виде (с учётом правок)."""
+        return [p["text"] for p in self.messages.values()]
+
+    def final(self) -> dict:
+        """Последнее отправленное сообщение в нынешнем виде."""
+        return list(self.messages.values())[-1]
 
     def last(self) -> dict:
         """Последний показанный экран: отправленный или отредактированный."""
@@ -52,6 +64,7 @@ class FakeApi:
 @pytest.fixture
 def bot(tmp_path, monkeypatch):
     monkeypatch.setattr(answers, "TYPING_SECONDS", 0)
+    monkeypatch.setattr(answers, "STREAM_DELAY", 0)
     monkeypatch.setattr(notify, "SEND_PAUSE", 0)
     return Bot(FakeApi(), Store(tmp_path / "settings.db"))
 
@@ -162,8 +175,8 @@ def all_screens() -> list[tuple[str, dict | None]]:
 
 
 def test_main_menu_has_models_settings_and_chats():
-    assert texts(ui.main_keyboard()) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты"]
-    assert data(ui.main_keyboard()) == ["nav:models", "nav:settings", "nav:chats"]
+    assert texts(ui.main_keyboard()) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты", "◈ Мой баланс"]
+    assert data(ui.main_keyboard()) == ["nav:models", "nav:settings", "nav:chats", "nav:balance"]
 
 
 def test_models_menu_lists_claude_then_gpt_then_other():
@@ -409,7 +422,12 @@ def test_stale_button_answers_and_opens_menu(bot):
     """Кнопки прошлых версий бота не должны крутить часики бесконечно."""
     press(bot, "pick:gpt-6-sol:-1")
     assert bot.api.named("answerCallbackQuery")[-1]["text"] == ui.STALE_BUTTON
-    assert texts(bot.api.last()["reply_markup"]) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты"]
+    assert texts(bot.api.last()["reply_markup"]) == [
+        "⁂ Модели",
+        "⛭ Настройки",
+        "☰ Мои чаты",
+        "◈ Мой баланс",
+    ]
 
 
 def test_old_message_screen_is_sent_anew(bot):
@@ -546,8 +564,7 @@ def test_chat_starts_from_card_with_visible_keyboard(bot):
     answer = bot.api.last()
     assert answer["text"].startswith("<b>⌬ GPT-6 Astra</b> · тестовый ответ")
     assert "<i>↳ " in answer["text"] and "сегодня" in answer["text"]
-    # клавиатура чата — под каждым ответом: если её скрыли, она вернётся
-    assert answer["reply_markup"] == ui.chat_keyboard(MODELS["gpt-6-astra"])
+    assert texts(answer["reply_markup"]) == ["↻ Перегенерировать", "⇄ Другая модель", "− Короче"]
     assert bot.api.named("sendChatAction")
     assert active(bot).title == "Привет" and active(bot).messages == 1
 
@@ -624,7 +641,7 @@ def test_end_chat_keeps_it_and_continue_reopens(bot):
     ended, menu = bot.api.named("sendMessage")[-2:]
     assert ended["text"] == ui.chat_ended(bot.store.chats(42)[0], True)
     assert ended["reply_markup"] == ui.REMOVE_KEYBOARD
-    assert texts(menu["reply_markup"]) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты"]
+    assert texts(menu["reply_markup"]) == ["⁂ Модели", "⛭ Настройки", "☰ Мои чаты", "◈ Мой баланс"]
     assert bot.store.get(42).active == 0
     chat = bot.store.chats(42)[0]
     assert len(bot.store.history(chat.id)) == 2  # переписка сохранилась
@@ -788,14 +805,207 @@ def test_limit_without_notifications_only_blocks(bot, monkeypatch):
     assert sent[-1] == answers.limit_reached()
 
 
-def test_photo_gets_hint(bot):
-    say(bot, None, photo=[{"file_id": "f"}])
+def test_sticker_gets_hint(bot):
+    say(bot, None, sticker={"file_id": "f"})
     assert bot.api.sent()[-1] == ui.ONLY_TEXT
 
 
 def test_group_messages_are_ignored(bot):
     say(bot, "/start", "Привет", chat_type="supergroup")
     assert bot.api.calls == []
+
+
+# Потоковые ответы и кнопки под ответом
+
+
+def test_answer_streams_into_one_message(bot):
+    say(bot, "/chat", "Расскажи что-нибудь длинное")
+    answer_id = max(bot.api.messages)
+    edits = [p for p in bot.api.named("editMessageText") if p["message_id"] == answer_id]
+    assert len(edits) == answers.STREAM_STEPS - 1  # первая часть отправлена, дальше — правки
+    first = bot.api.named("sendMessage")[-1]
+    assert (
+        first["text"].endswith(ui.CURSOR)
+        and "reply_markup" not in first
+        or not first.get("reply_markup")
+    )
+    final = bot.api.messages[answer_id]
+    assert not final["text"].endswith(ui.CURSOR)
+    assert final["text"].startswith("<b>✻ Claude Opus 5.5</b>") and "<blockquote>" in final["text"]
+    assert final["reply_markup"] == ui.answer_keyboard(1)
+
+
+def answer_button(bot: Bot, action: str) -> None:
+    reply_id = data(bot.api.final()["reply_markup"])[0].split(":")[1]
+    press_on(bot, f"ans:{reply_id}:{action}", max(bot.api.messages))
+
+
+def press_on(bot: Bot, data_: str, message_id: int) -> None:
+    message = {"message_id": message_id, "date": 1, "chat": {"id": 42, "type": "private"}}
+    query = {"id": str(next(_ids)), "from": USER, "data": data_, "message": message}
+    bot.handle({"update_id": next(_ids), "callback_query": query})
+
+
+def test_regenerate_rewrites_the_same_message_and_costs_tokens(bot):
+    say(bot, "/chat", "Привет")
+    before_text, used = bot.api.final()["text"], bot.store.used_today(42)
+    messages = len(bot.api.messages)
+    answer_button(bot, "r")
+    assert len(bot.api.messages) == messages  # ответ переписан в том же сообщении
+    assert bot.api.final()["text"] != before_text  # другая заготовка
+    assert bot.store.used_today(42) > used
+    assert len(history(bot)) == 2  # в памяти — по-прежнему один вопрос и один ответ
+    assert history(bot)[-1].text == answers.plain_text(bot.api.final()["text"].split("\n\n<i>↳")[0])
+
+
+def test_shorter_gives_one_sentence(bot):
+    say(bot, "/chat", "Привет")
+    answer_button(bot, "s")
+    text = bot.api.final()["text"]
+    assert "<blockquote>" not in text
+    body = text.split("\n\n")[1]
+    assert body.count(".") == 1
+
+
+def test_other_model_answers_the_same_question(bot):
+    say(bot, "/chat", "Привет")
+    answer_button(bot, "m")
+    picker = bot.api.named("editMessageReplyMarkup")[-1]["reply_markup"]
+    assert "✻ Claude Opus 5.5" not in texts(picker) and texts(picker)[-1] == "← Назад"
+    press_on(bot, data(picker)[2], max(bot.api.messages))  # третья в списке — GPT-6.1 Sol
+    assert bot.api.final()["text"].startswith("<b>⌬ GPT-6.1 Sol</b>")
+    assert active(bot).model == "claude-opus-5-5"  # сам чат остался с прежней моделью
+    answer_button(bot, "back")  # «← Назад» возвращает кнопки ответа
+    assert texts(bot.api.named("editMessageReplyMarkup")[-1]["reply_markup"])[0] == ui.REGENERATE
+
+
+def test_answer_buttons_of_someone_else_do_nothing(bot):
+    say(bot, "/chat", "Привет")
+    press(bot, "ans:1:r", uid=777)
+    assert bot.api.named("answerCallbackQuery")[-1]["show_alert"]
+    assert bot.store.used_today(777) == 0
+
+
+# Фото, файлы и голосовые
+
+
+def test_photo_with_caption_goes_to_the_model(bot):
+    say(bot, "/chat")
+    photo = [
+        {"file_id": "a", "width": 90, "height": 90},
+        {"file_id": "b", "width": 1280, "height": 720},
+    ]
+    say(bot, None, photo=photo, caption="Что на фото?")
+    text = bot.api.final()["text"]
+    assert "Вижу изображение 1280×720." in text
+    assert "вход 803" in text  # 800 за картинку + 3 за подпись
+    assert active(bot).title == "[изображение 1280×720] Что на фото?"
+
+
+def test_pdf_and_voice_depend_on_the_model(bot):
+    say(bot, "/chat")  # Claude: файлы понимает, голос — нет
+    say(
+        bot,
+        None,
+        document={
+            "file_id": "d",
+            "file_name": "отчёт.pdf",
+            "file_size": 20480,
+            "mime_type": "application/pdf",
+        },
+    )
+    assert "Прочитал файл «отчёт.pdf», 20 КБ." in bot.api.final()["text"]
+    say(bot, None, voice={"file_id": "v", "duration": 75})
+    assert bot.api.sent()[-1] == ui.cant_read(OPUS, "voice")
+    press(bot, "chat:gpt-6.1-sol:models")
+    say(bot, None, voice={"file_id": "v", "duration": 75})
+    assert "Прослушал голосовое 1:15." in bot.api.final()["text"]
+
+
+def test_media_without_chat_gets_the_hint(bot):
+    say(bot, None, photo=[{"file_id": "a", "width": 10, "height": 10}])
+    assert bot.api.sent()[-1] == ui.no_chat_text()
+
+
+def test_model_card_lists_what_it_understands(bot):
+    assert "Понимает: текст, фото, PDF и документы" in ui.model_card(OPUS, Prefs())
+    assert "голосовые" in ui.model_card(MODELS["gemini-4-argon"], Prefs())
+
+
+# Баланс и оплата Stars
+
+
+def test_balance_screen_and_invoice(bot):
+    press(bot, "nav:balance")
+    shown = bot.api.last()
+    assert "осталось 20 000 из 20 000" in shown["text"]
+    assert texts(shown["reply_markup"])[0] == "+ 100 000 токенов · 50 Stars"
+    press(bot, "buy:s")
+    invoice = bot.api.named("sendInvoice")[-1]
+    assert (invoice["currency"], invoice["payload"]) == ("XTR", "pack:s")
+    assert invoice["prices"] == [{"label": "100 000 токенов", "amount": 50}]
+
+
+def checkout(bot: Bot, payload: str, amount: int, currency: str = "XTR") -> dict:
+    query = {
+        "id": "pc1",
+        "from": USER,
+        "currency": currency,
+        "total_amount": amount,
+        "invoice_payload": payload,
+    }
+    bot.handle({"update_id": next(_ids), "pre_checkout_query": query})
+    return bot.api.named("answerPreCheckoutQuery")[-1]
+
+
+def test_pre_checkout_checks_the_price(bot):
+    assert checkout(bot, "pack:m", 200)["ok"] is True
+    assert checkout(bot, "pack:m", 1)["ok"] is False
+    assert checkout(bot, "pack:zzz", 200)["ok"] is False
+    assert checkout(bot, "pack:m", 200, "USD")["ok"] is False
+
+
+def pay(bot: Bot, charge_id: str = "ch1", payload: str = "pack:s", amount: int = 50) -> None:
+    payment = {
+        "currency": "XTR",
+        "total_amount": amount,
+        "invoice_payload": payload,
+        "telegram_payment_charge_id": charge_id,
+        "provider_payment_charge_id": "",
+    }
+    say(bot, None, successful_payment=payment)
+
+
+def test_successful_payment_credits_once(bot):
+    pay(bot)
+    assert bot.store.get(42).balance == 100_000
+    assert bot.api.sent()[-1] == ui.paid(100_000, 100_000)
+    pay(bot)  # Telegram прислал ту же оплату ещё раз
+    assert bot.store.get(42).balance == 100_000
+    pay(bot, "ch2", "pack:m", 200)
+    assert bot.store.get(42).balance == 600_000
+
+
+def test_paid_tokens_are_spent_after_the_free_limit(bot, monkeypatch):
+    monkeypatch.setattr(answers, "TEST_DAILY_LIMIT", 300)
+    bot.store.update(42, memory=False)
+    pay(bot)
+    say(bot, "/chat", *["Привет"] * 6)
+    used = bot.store.used_today(42)
+    assert used > 300
+    assert bot.store.get(42).balance == 100_000 - (used - 300)
+    notes = [t for t in bot.api.sent() if "Дальше токены списываются с баланса" in t]
+    assert len(notes) == 1
+    assert "баланс " in bot.api.sent()[-1]  # строка расхода показывает остаток
+
+
+def test_out_of_tokens_offers_to_top_up(bot, monkeypatch):
+    monkeypatch.setattr(answers, "TEST_DAILY_LIMIT", 300)
+    bot.store.update(42, memory=False, notify_limit=False)
+    say(bot, "/chat", *["Привет"] * 6)
+    last = bot.api.named("sendMessage")[-1]
+    assert last["text"] == answers.limit_reached()
+    assert data(last["reply_markup"]) == ["nav:balance"]
 
 
 # Уведомления о новых моделях

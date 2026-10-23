@@ -8,7 +8,7 @@
 import time
 
 from models_bot import answers, log, ui
-from models_bot.catalog import CUSTOM_ROLE, MODELS, ROLE_MAX_LENGTH, ROLES, Model
+from models_bot.catalog import CUSTOM_ROLE, MODELS, PACKS, ROLE_MAX_LENGTH, ROLES, Model
 from models_bot.store import (
     DETAILS,
     LANGS,
@@ -33,8 +33,9 @@ class Bot:
 
     # Отправка
 
-    def send(self, chat_id: int, text: str, markup: dict | None = None) -> None:
-        self.api(
+    def send(self, chat_id: int, text: str, markup: dict | None = None) -> int:
+        """Отправить сообщение. Возвращает его id."""
+        sent = self.api(
             "sendMessage",
             chat_id=chat_id,
             text=text,
@@ -42,6 +43,45 @@ class Bot:
             reply_markup=markup,
             link_preview_options={"is_disabled": True},
         )
+        return sent["message_id"]
+
+    def edit(self, chat_id: int, message_id: int, text: str, markup: dict | None = None) -> None:
+        self.api(
+            "editMessageText",
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+            link_preview_options={"is_disabled": True},
+        )
+
+    def stream(self, uid: int, html: str, markup: dict, message_id: int | None = None) -> None:
+        """Ответ «печатается»: текст появляется частями правками одного сообщения,
+        а последняя правка ставит разметку и кнопки. message_id — дописать в это сообщение."""
+        plain = answers.plain_text(html)
+        for step in range(1, answers.STREAM_STEPS):
+            cut = plain.rfind(" ", 0, len(plain) * step // answers.STREAM_STEPS)
+            if cut <= 0:
+                continue
+            part = answers.escape(plain[:cut].rstrip()) + ui.CURSOR
+            try:
+                if message_id is None:
+                    message_id = self.send(uid, part)
+                else:
+                    self.edit(uid, message_id, part)
+            except TelegramError as e:
+                log.info("Промежуточная часть ответа не ушла: %s", e)
+            time.sleep(answers.STREAM_DELAY)
+        if message_id is None:
+            self.send(uid, html, markup)
+            return
+        try:
+            self.edit(uid, message_id, html, markup)
+        except TelegramError as e:
+            if "message is not modified" not in e.description:
+                log.info("Ответ не дописан в сообщение, присылаю заново: %s", e)
+                self.send(uid, html, markup)
 
     def show(self, query: dict, text: str, markup: dict) -> None:
         """Перерисовать экран в сообщении с кнопкой, а если его не править — прислать заново."""
@@ -99,6 +139,8 @@ class Bot:
             self.on_button(query)
         elif message := update.get("message"):
             self.on_message(message)
+        elif checkout := update.get("pre_checkout_query"):
+            self.pre_checkout(checkout)
 
     def visitor(self, uid: int) -> Prefs:
         """Настройки того, кто написал или нажал кнопку."""
@@ -114,11 +156,15 @@ class Bot:
             return
         uid = user["id"]
         prefs = self.visitor(uid)
-        text = message.get("text")
+        if payment := message.get("successful_payment"):
+            self.on_payment(uid, payment)
+            return
+        attachment = answers.attachment_of(message)
+        text = message.get("text") or (message.get("caption") if attachment else None)
         if prefs.awaiting and ((text or "").startswith("/") or text in ui.CHAT_BUTTONS):
             # Команда или кнопка чата отменяют ввод роли или названия, а не становятся им
             prefs = self.store.update(uid, awaiting="")
-        if text and text.startswith("/"):
+        if text and text.startswith("/") and not attachment:
             command = text.split()[0][1:].split("@")[0].lower()
             self.command(command, uid, user, prefs)
         elif text == ui.CHATS:
@@ -128,15 +174,19 @@ class Bot:
         elif text == ui.END_CHAT:
             self.end_chat(uid, user, prefs)
         elif prefs.awaiting == "role":
-            self.role_input(uid, text)
+            self.role_input(uid, None if attachment else text)
         elif prefs.awaiting.startswith("rename:"):
-            self.rename_input(uid, _int(prefs.awaiting.partition(":")[2]), text)
-        elif not text:
+            self.rename_input(
+                uid, _int(prefs.awaiting.partition(":")[2]), None if attachment else text
+            )
+        elif not text and not attachment:
             self.send(uid, ui.ONLY_TEXT)
         else:
             chat, model = self.open_chat_of(uid, prefs)
-            if chat:
-                self.chat(uid, prefs, chat, model, text)
+            if chat and attachment and attachment.kind not in model.inputs:
+                self.send(uid, ui.cant_read(model, attachment.kind))
+            elif chat:
+                self.chat(uid, prefs, chat, model, text or "", attachment)
             else:
                 chats = self.store.chats(uid)
                 last = chats[0] if chats else None
@@ -160,6 +210,12 @@ class Bot:
             self.send(uid, text, ui.settings_keyboard(prefs))
         elif command == "help":
             self.send(uid, ui.HELP)
+        elif command == "balance":
+            self.send(
+                uid, ui.balance_text(prefs, self.store.used_today(uid)), ui.balance_keyboard()
+            )
+        elif command == "paysupport":
+            self.send(uid, ui.PAY_SUPPORT)
         else:  # /start и неизвестные команды
             chat, _ = self.open_chat_of(uid, prefs)
             self.send(uid, ui.welcome(user.get("first_name"), prefs, chat), ui.main_keyboard())
@@ -206,6 +262,16 @@ class Bot:
                 self.show_chats(query, prefs, 0, kind != "open")
             else:
                 self.chat_action(query, kind, chat, prefs, src)
+        elif kind in ("ans", "ansm"):
+            reply_id, _, action = arg.partition(":")
+            answer = self.store.reply(_int(reply_id))
+            if answer is None or answer.user_id != uid:
+                self.toast(query, "Этот ответ уже не изменить", alert=True)
+            else:
+                self.answer_action(query, answer, kind, action, prefs)
+        elif kind == "buy" and arg in PACKS:
+            self.toast(query)
+            self.api("sendInvoice", chat_id=uid, **ui.invoice(PACKS[arg]))
         elif kind == "tgl" and arg in ui.TOGGLES:
             self.toggle(query, arg, prefs)
         elif kind == "role" and (arg in ROLES or arg == CUSTOM_ROLE):
@@ -235,6 +301,9 @@ class Bot:
         elif name == "settings":
             text = ui.settings_text(prefs, self.store.used_today(uid))
             markup = ui.settings_keyboard(prefs)
+        elif name == "balance":
+            text = ui.balance_text(prefs, self.store.used_today(uid))
+            markup = ui.balance_keyboard()
         elif name == "picker":
             text, markup = ui.picker_text(), ui.picker_keyboard(prefs)
         elif name == "role":
@@ -443,33 +512,160 @@ class Bot:
         self.send(uid, ui.chat_ended(chat, kept), ui.REMOVE_KEYBOARD)
         self.send(uid, ui.welcome(user.get("first_name"), prefs), ui.main_keyboard())
 
-    def chat(self, uid: int, prefs: Prefs, chat: Chat, model: Model, text: str) -> None:
-        used = self.store.used_today(uid)
-        if used >= answers.TEST_DAILY_LIMIT:
-            self.send(uid, answers.limit_reached())
+    def out_of_tokens(self, uid: int, prefs: Prefs) -> bool:
+        """Нет ни бесплатных токенов на сегодня, ни купленных: отвечать нечем."""
+        if answers.can_answer(self.store.used_today(uid), prefs.balance):
+            return False
+        self.send(uid, answers.limit_reached(), ui.buy_keyboard())
+        return True
+
+    def finish(self, uid: int, prefs: Prefs, reply: answers.Reply, html: str, used: int) -> str:
+        """Ответ готов: добавить строку расхода. Возвращает HTML для отправки."""
+        if prefs.show_usage:
+            balance = max(0, prefs.balance - answers.paid_part(used, used + reply.total))
+            html += "\n\n" + answers.usage_line(reply, used + reply.total, balance)
+        return html
+
+    def pay(self, uid: int, prefs: Prefs, total: int) -> None:
+        """Списать токены за доставленный ответ: сначала бесплатные, сверх них — баланс."""
+        before, after = self.store.spend(uid, total)
+        paid = answers.paid_part(before, after)
+        balance = self.store.charge(uid, paid) if paid else prefs.balance
+        if prefs.notify_limit:
+            for notice in answers.limit_notices(before, after, balance, paid):
+                markup = None if balance else ui.buy_keyboard()
+                self.send(uid, notice, markup)
+
+    def chat(
+        self,
+        uid: int,
+        prefs: Prefs,
+        chat: Chat,
+        model: Model,
+        text: str,
+        attachment: answers.Attachment | None = None,
+    ) -> None:
+        if self.out_of_tokens(uid, prefs):
             return
+        used = self.store.used_today(uid)
         self.api("sendChatAction", chat_id=uid, action="typing")
         time.sleep(answers.TYPING_SECONDS)
         history = self.store.history(chat.id) if prefs.memory else []
-        reply = answers.compose(model, prefs, text, history)
-        html = reply.html
-        if prefs.show_usage:
-            html += "\n\n" + answers.usage_line(reply, used + reply.total)
-        # Клавиатура чата — под каждым ответом: если её скрыли, она вернётся
-        self.send(uid, html, ui.chat_keyboard(model))
+        reply = answers.compose(model, prefs, text, history, attachment=attachment)
+        packed = answers.pack_attachment(attachment)
+        reply_id = self.store.add_reply(uid, chat.id, text, model.id, packed)
+        self.stream(
+            uid, self.finish(uid, prefs, reply, reply.html, used), ui.answer_keyboard(reply_id)
+        )
         # Токены и история записываются, только когда ответ дошёл
-        before, after = self.store.spend(uid, reply.total)
-        self.store.note_question(chat.id, text)
+        self.pay(uid, prefs, reply.total)
+        asked = f"[{attachment.about}] {text}".strip() if attachment else text
+        self.store.note_question(chat.id, asked)
         if prefs.memory:
             self.store.remember(
                 chat.id,
                 uid,
-                Turn("user", text, reply.question_tokens),
+                Turn("user", asked, reply.question_tokens),
                 Turn("bot", answers.plain_text(reply.html), reply.output_tokens),
             )
-        if prefs.notify_limit:
-            for notice in answers.limit_notices(before, after):
-                self.send(uid, notice)
+
+    # Кнопки под ответом
+
+    def answer_action(self, query: dict, answer, kind: str, action: str, prefs: Prefs) -> None:
+        uid = query["from"]["id"]
+        message = query.get("message") or {}
+        if kind == "ans" and action in ("m", "back"):
+            self.toast(query)
+            markup = (
+                ui.other_model_keyboard(answer.id, answer.model)
+                if action == "m"
+                else ui.answer_keyboard(answer.id)
+            )
+            if message.get("date"):
+                try:
+                    self.api(
+                        "editMessageReplyMarkup",
+                        chat_id=uid,
+                        message_id=message["message_id"],
+                        reply_markup=markup,
+                    )
+                except TelegramError as e:
+                    log.info("Кнопки под ответом не обновились: %s", e)
+            return
+        model_id = action if kind == "ansm" else answer.model
+        model = MODELS.get(model_id)
+        if model is None or (kind == "ans" and action not in ("r", "s")):
+            self.toast(query, "Этой модели больше нет", alert=True)
+            return
+        attachment = answers.unpack_attachment(answer.attachment)
+        if attachment and attachment.kind not in model.inputs:
+            self.toast(query, f"{model.name} не понимает {ui.INPUTS[attachment.kind]}", alert=True)
+            return
+        if not answers.can_answer(self.store.used_today(uid), prefs.balance):
+            self.toast(query, "Токены на сегодня закончились", alert=True)
+            self.send(uid, answers.limit_reached(), ui.buy_keyboard())
+            return
+        self.toast(query, {"r": ui.REGENERATE, "s": ui.SHORTER}.get(action, f"⇄ {model.name}"))
+        chat = self.own_chat(uid, answer.chat_id)
+        latest = chat is not None and self.store.last_reply_id(chat.id) == answer.id
+        history = self.store.history(chat.id) if chat and prefs.memory else []
+        if latest and history:
+            history = history[:-2]  # этот вопрос и прошлый ответ на него — не контекст
+        attempt = answer.attempt + 1 if action == "r" else answer.attempt
+        reply = answers.compose(
+            model,
+            prefs,
+            answer.question,
+            history,
+            attempt=attempt,
+            brief=action == "s",
+            attachment=attachment,
+        )
+        used = self.store.used_today(uid)
+        html = self.finish(uid, prefs, reply, reply.html, used)
+        message_id = message["message_id"] if message.get("date") else None
+        self.stream(uid, html, ui.answer_keyboard(answer.id), message_id)
+        self.pay(uid, prefs, reply.total)
+        self.store.update_reply(answer.id, attempt=attempt, model=model.id)
+        if latest and prefs.memory:
+            self.store.replace_last_answer(
+                chat.id, answers.plain_text(reply.html), reply.output_tokens
+            )
+
+    # Оплата Stars
+
+    def pre_checkout(self, checkout: dict) -> None:
+        """Telegram спрашивает, можно ли провести оплату: ответить нужно за 10 секунд."""
+        kind, _, key = (checkout.get("invoice_payload") or "").partition(":")
+        pack = PACKS.get(key) if kind == "pack" else None
+        ok = (
+            pack is not None
+            and checkout.get("currency") == "XTR"
+            and checkout.get("total_amount") == pack.stars
+        )
+        self.api(
+            "answerPreCheckoutQuery",
+            pre_checkout_query_id=checkout["id"],
+            ok=ok,
+            error_message=None if ok else "Этот счёт устарел, откройте «◈ Мой баланс» заново.",
+        )
+
+    def on_payment(self, uid: int, payment: dict) -> None:
+        kind, _, key = (payment.get("invoice_payload") or "").partition(":")
+        pack = PACKS.get(key) if kind == "pack" else None
+        charge_id = payment.get("telegram_payment_charge_id", "")
+        if pack is None or payment.get("currency") != "XTR":
+            log.error("Оплата %s от %s с неизвестным счётом", charge_id, uid)
+            self.send(uid, ui.PAY_SUPPORT)
+            return
+        balance = self.store.credit(
+            charge_id, uid, pack.key, payment.get("total_amount", 0), pack.tokens
+        )
+        if balance is None:
+            log.warning("Оплата %s уже начислена", charge_id)
+            return
+        log.info("Оплата %s: %s Stars от %s", charge_id, payment.get("total_amount"), uid)
+        self.send(uid, ui.paid(pack.tokens, balance))
 
 
 # Экран → всплывающая подпись при переходе
@@ -482,4 +678,5 @@ SCREENS = {
     "picker": "⛭ Основная модель",
     "role": "⛭ Роль",
     "notify": "⛭ Уведомления",
+    "balance": ui.BALANCE,
 }

@@ -161,7 +161,12 @@ class Api:
 
 
 def update_user(update: dict) -> int | None:
-    event = update.get("message") or update.get("callback_query") or {}
+    event = (
+        update.get("message")
+        or update.get("callback_query")
+        or update.get("pre_checkout_query")
+        or {}
+    )
     return (event.get("from") or {}).get("id")
 
 
@@ -257,7 +262,7 @@ def poll(api: Api, serial: Serial, stop: threading.Event) -> None:
                     _timeout=POLL_TIMEOUT + 15,
                     offset=offset,
                     timeout=POLL_TIMEOUT,
-                    allowed_updates=["message", "callback_query"],
+                    allowed_updates=["message", "callback_query", "pre_checkout_query"],
                 )
             except TelegramError as e:
                 # 409 — где-то запущен второй экземпляр бота с тем же токеном

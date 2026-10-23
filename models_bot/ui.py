@@ -14,7 +14,13 @@
 Данные кнопок: nav:<экран>, card:<модель>:<откуда>, use:<модель>:<откуда>,
 chat:<модель>[:<откуда>], tgl:<настройка>, role:<роль>, chats:<страница>:<s|e>,
 open:<чат>:<l|i|h> (из списка, карточки чата, подсказки), info:<чат>, ren:<чат>,
-del:<чат>, delok:<чат>, newchat.
+del:<чат>, delok:<чат>, newchat, buy:<пакет>,
+ans:<ответ>:<r|m|s|back> (перегенерировать, другая модель, короче), ansm:<ответ>:<модель>.
+
+Ответ модели «печатается»: приходит частями (правки одного сообщения), под ним — кнопки
+«↻ Перегенерировать», «⇄ Другая модель», «− Короче». Фото, PDF и голосовые уходят модели,
+если она их понимает. Баланс: бесплатный дневной лимит, сверх него — токены, купленные
+за Telegram Stars в «◈ Мой баланс».
 
 Оформление монохромное: только символы Unicode без эмодзи-представления, тонкие
 и одного веса. Знаки разработчиков — в catalog.VENDOR_MARKS, остальное здесь:
@@ -27,8 +33,10 @@ import time
 from models_bot.answers import TEST_DAILY_LIMIT, WARN_SHARE, escape, num, plural, shorten
 from models_bot.catalog import (
     CUSTOM_ROLE,
+    INPUTS,
     MODELS,
     OTHER_MODELS,
+    PACKS,
     ROLE_MAX_LENGTH,
     ROLES,
     TOP_MODELS,
@@ -45,6 +53,11 @@ CHATS = "☰ Чаты"
 NEW_DIALOG = "↺ Новый диалог"
 END_CHAT = "■ Завершить чат"
 CHAT_BUTTONS = (CHATS, NEW_DIALOG, END_CHAT)  # клавиатура внизу во время чата
+BALANCE = "◈ Мой баланс"
+REGENERATE = "↻ Перегенерировать"
+OTHER_MODEL = "⇄ Другая модель"
+SHORTER = "− Короче"
+CURSOR = " ▍"  # конец текста, пока ответ ещё «печатается»
 TO_MENU = "← В меню"
 BACK = "← Назад"
 CHATS_PAGE = 8  # чатов на странице списка
@@ -58,7 +71,9 @@ COMMANDS = [
     {"command": "new", "description": "↺ Новый диалог"},
     {"command": "stop", "description": "■ Завершить чат"},
     {"command": "settings", "description": "⛭ Настройки"},
+    {"command": "balance", "description": "◈ Мой баланс и пополнение"},
     {"command": "help", "description": "ⓘ Помощь"},
+    {"command": "paysupport", "description": "ⓘ Вопрос по оплате"},
 ]
 
 # Переключатели в настройках: подпись на кнопке
@@ -195,6 +210,7 @@ def model_card(model: Model, prefs: Prefs, open_model: str = "") -> str:
         f"<i>{escape(model.vendor)} · тестовая модель</i>",
         "",
         f"<blockquote>{escape(model.about)}</blockquote>",
+        "Понимает: " + ", ".join(["текст"] + [INPUTS[k] for k in model.inputs]),
         "",
         f"ID · <code>{escape(model.id)}</code>",
     ]
@@ -357,7 +373,8 @@ def settings_text(prefs: Prefs, used_today: int) -> str:
         f"Уведомления — {notify_summary(prefs)}\n"
         f"Язык ответов — {LANGS[prefs.lang]}\n"
         f"Ответы — {DETAILS[prefs.detail]}</blockquote>\n\n"
-        f"Сегодня израсходовано {num(used_today)} из {num(TEST_DAILY_LIMIT)} тестовых токенов.\n"
+        f"Сегодня израсходовано {num(used_today)} токенов, бесплатно — {num(TEST_DAILY_LIMIT)}, "
+        f"на балансе — {num(prefs.balance)}.\n"
         "Нажмите на пункт, чтобы изменить. Роль, память и ответы сразу действуют и в открытом чате."
     )
 
@@ -422,10 +439,58 @@ HELP = (
     "/chat — новый чат с основной моделью\n"
     "/new — ещё один чат с моделью открытого\n"
     "/stop — закрыть чат (он сохранится)\n"
+    "/balance — баланс и пополнение\n"
     "/settings — настройки</blockquote>"
 )
 
-ONLY_TEXT = "Пока понимаю только текст. Напишите вопрос словами."
+ONLY_TEXT = "Такое пока не понимаю: пришлите текст, фото, PDF или голосовое."
+
+
+def cant_read(model: Model, kind: str) -> str:
+    able = [m.name for m in TOP_MODELS + OTHER_MODELS if kind in m.inputs]
+    return (
+        f"{escape(model.name)} не понимает {INPUTS[kind]}. "
+        f"Их понимают: {escape(', '.join(able))}. Начните чат с одной из них "
+        f"в «{MODELS_TITLE}» или пришлите текст."
+    )
+
+
+def balance_text(prefs: Prefs, used_today: int) -> str:
+    free_left = max(0, TEST_DAILY_LIMIT - used_today)
+    return (
+        f"<b>{BALANCE}</b>\n\n"
+        f"<blockquote>Бесплатно сегодня — осталось {num(free_left)} из {num(TEST_DAILY_LIMIT)}\n"
+        f"Купленные токены — {num(prefs.balance)}</blockquote>\n\n"
+        "Сначала тратятся бесплатные токены, они обновляются в 03:00 по Москве. "
+        "Когда они кончатся, токены списываются с баланса.\n\n"
+        "Пополнить баланс за Telegram Stars ↓\n"
+        "<i>Тестовый режим: модели пока отвечают заготовками.</i>"
+    )
+
+
+def invoice(pack) -> dict:
+    title = f"{num(pack.tokens)} токенов"
+    return {
+        "title": title,
+        "description": (
+            f"Пополнение баланса {BRAND} на {num(pack.tokens)} токенов. "
+            "Сейчас модели работают в тестовом режиме и отвечают заготовками."
+        ),
+        "payload": f"pack:{pack.key}",
+        "currency": "XTR",
+        "prices": [{"label": title, "amount": pack.stars}],
+    }
+
+
+def paid(tokens: int, balance: int) -> str:
+    return f"✓ Оплата прошла: +{num(tokens)} токенов. На балансе — {num(balance)}."
+
+
+PAY_SUPPORT = (
+    "<b>ⓘ Вопрос по оплате</b>\n\n"
+    "Если Stars списались, а токены не пришли, или хотите вернуть оплату — опишите ситуацию "
+    "владельцу бота и приложите чек из истории Stars в Telegram. Возврат приходит обратно в Stars."
+)
 ROLE_ONLY_TEXT = "Пришлите инструкцию текстом или нажмите «← Отмена»."
 TITLE_ONLY_TEXT = "Пришлите название текстом или нажмите «← Отмена»."
 STALE_BUTTON = "Кнопка устарела, открываю меню"
@@ -438,8 +503,38 @@ ROLE_SAVED = "✓ Своя роль сохранена"
 def main_keyboard() -> dict:
     return inline(
         [button(MODELS_TITLE, "nav:models"), button(SETTINGS, "nav:settings")],
-        [button(MY_CHATS, "nav:chats")],
+        [button(MY_CHATS, "nav:chats"), button(BALANCE, "nav:balance")],
     )
+
+
+def answer_keyboard(reply_id: int) -> dict:
+    """Под ответом модели."""
+    return inline(
+        [button(REGENERATE, f"ans:{reply_id}:r")],
+        [button(OTHER_MODEL, f"ans:{reply_id}:m"), button(SHORTER, f"ans:{reply_id}:s")],
+    )
+
+
+def other_model_keyboard(reply_id: int, current: str) -> dict:
+    models = [
+        button(m.label, f"ansm:{reply_id}:{m.id}")
+        for m in TOP_MODELS + OTHER_MODELS
+        if m.id != current
+    ]
+    return inline(*column(models), [button(BACK, f"ans:{reply_id}:back")])
+
+
+def balance_keyboard() -> dict:
+    packs = [
+        button(f"+ {num(p.tokens)} токенов · {p.stars} Stars", f"buy:{p.key}")
+        for p in PACKS.values()
+    ]
+    return inline(*column(packs), [button(TO_MENU, "nav:main")])
+
+
+def buy_keyboard() -> dict:
+    """Под сообщением «лимит исчерпан»."""
+    return inline([button(f"{BALANCE} · пополнить", "nav:balance")])
 
 
 def models_keyboard() -> dict:

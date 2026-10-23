@@ -14,6 +14,14 @@ from collections import namedtuple
 # ✻ — искра Claude, ⌬ — шестигранник OpenAI, ✧ — четырёхлучевая звезда Gemini
 VENDOR_MARKS = {"Anthropic": "✻", "OpenAI": "⌬", "Google": "✧"}
 
+# Что модель понимает кроме текста
+INPUTS = {"image": "фото", "file": "PDF и документы", "voice": "голосовые"}
+VENDOR_INPUTS = {
+    "Anthropic": ("image", "file"),
+    "OpenAI": ("image", "file", "voice"),
+    "Google": ("image", "file", "voice"),
+}
+
 
 class Model(namedtuple("Model", "id name vendor about")):
     __slots__ = ()
@@ -21,6 +29,10 @@ class Model(namedtuple("Model", "id name vendor about")):
     @property
     def mark(self) -> str:
         return VENDOR_MARKS.get(self.vendor, "·")
+
+    @property
+    def inputs(self) -> tuple[str, ...]:
+        return VENDOR_INPUTS.get(self.vendor, ())
 
     @property
     def label(self) -> str:
@@ -100,3 +112,9 @@ ROLES = {
 # Своя роль: текст инструкции пользователь присылает сам
 CUSTOM_ROLE = "custom"
 ROLE_MAX_LENGTH = 500
+
+# Пакеты токенов за Telegram Stars
+Pack = namedtuple("Pack", "key tokens stars")
+PACKS = {
+    p.key: p for p in [Pack("s", 100_000, 50), Pack("m", 500_000, 200), Pack("l", 2_000_000, 700)]
+}
