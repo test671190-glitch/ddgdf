@@ -7,6 +7,8 @@
 
 import asyncio
 import logging
+import time
+from collections import defaultdict
 from datetime import timedelta
 
 from aiogram import Bot
@@ -20,6 +22,8 @@ from bot.utils import notify_admins
 
 logger = logging.getLogger(__name__)
 
+CHECK_INTERVAL = 10  # секунд между запросами к Crypto Pay по кнопке «Проверить оплату»
+
 
 class CryptoPayments:
     def __init__(self, client: CryptoPayClient, db: Database, bot: Bot, settings: Settings) -> None:
@@ -27,9 +31,17 @@ class CryptoPayments:
         self.db = db
         self.bot = bot
         self.settings = settings
+        # Двойное нажатие «Оплатить криптой» шлёт два запроса подряд: без блокировки оба
+        # не находят открытого счёта и выставляют два
+        self._locks: defaultdict[tuple[int, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._checked: dict[int, float] = {}  # заказ -> когда последний раз спрашивали Crypto Pay
 
     async def get_or_create(self, user_id: int, tariff: Tariff) -> CryptoOrder:
         """Возвращает действующий счёт пользователя на этот тариф или создаёт новый."""
+        async with self._locks[(user_id, tariff.code)]:
+            return await self._get_or_create(user_id, tariff)
+
+    async def _get_or_create(self, user_id: int, tariff: Tariff) -> CryptoOrder:
         order = await self.db.open_crypto_order(user_id, tariff.code)
         if order:
             return order
@@ -52,9 +64,19 @@ class CryptoPayments:
         )
 
     async def check(self, order: CryptoOrder) -> str:
-        """Сверяет один заказ с Crypto Pay и возвращает его актуальный статус."""
+        """Сверяет один заказ с Crypto Pay и возвращает его актуальный статус.
+
+        Не чаще раза в CHECK_INTERVAL на заказ: иначе флуд кнопкой «Проверить оплату»
+        упирал бы токен в лимит Crypto Pay, и вставала бы проверка оплат у всех клиентов.
+        Фоновая проверка (crypto_loop) всё равно идёт каждые 15 секунд.
+        """
+        now = time.monotonic()
         if order.status == "pending" and order.invoice_id:
-            await self.sync([order])
+            if now - self._checked.get(order.id, -1e9) >= CHECK_INTERVAL:
+                self._checked[order.id] = now
+                if len(self._checked) > 10_000:
+                    self._checked = {k: v for k, v in self._checked.items() if now - v < 60}
+                await self.sync([order])
         fresh = await self.db.get_crypto_order(order.id)
         return fresh.status if fresh else "expired"
 
@@ -67,6 +89,15 @@ class CryptoPayments:
         for invoice in await self.client.get_invoices(list(by_invoice)):
             order = by_invoice.get(invoice.invoice_id)
             if order is None:
+                continue
+            if invoice.payload and invoice.payload != f"order:{order.id}":
+                # счёт не от этого заказа — не засчитываем чужую оплату
+                logger.error(
+                    "Счёт %s: payload %r не совпадает с заказом %s",
+                    invoice.invoice_id,
+                    invoice.payload,
+                    order.id,
+                )
                 continue
             if invoice.status == "paid":
                 await self._complete(order)
@@ -85,8 +116,7 @@ class CryptoPayments:
             self.settings,
             f"💰 Оплата криптой: пользователь <code>{order.user_id}</code>, "
             f"тариф <b>{tariff.title}</b>, ${tariff.price_usd}\n"
-            f"Заказ #{order.id}, счёт Crypto Pay {order.invoice_id}\n"
-            f"Возврат: <code>/refund crypto:{order.id}</code>",
+            f"Заказ #{order.id}, счёт Crypto Pay {order.invoice_id}",
         )
 
 

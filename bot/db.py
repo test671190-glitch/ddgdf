@@ -2,7 +2,7 @@
 
 Ключи в пуле привязаны к тарифу. При покупке пользователь получает свободный ключ
 своего тарифа. Ключ, который больше не должен работать (подписка закончилась,
-сменился тариф, возврат), получает статус "revoke" — админ деактивирует его в панели провайдера.
+сменился тариф), получает статус "revoke" — админ деактивирует его в панели провайдера.
 """
 
 import asyncio
@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     user_id INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+-- Обращения в поддержку: какое сообщение в чате админа относится к какому клиенту.
+-- Админ отвечает на него реплаем, и бот пересылает ответ этому клиенту
+CREATE TABLE IF NOT EXISTS support_messages (
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
 """
 
 # Колонки, добавленные после первого релиза: (таблица, колонка, тип)
@@ -137,12 +146,6 @@ class Payment:
     stars: int
     charge_id: str
     refunded: bool
-
-
-@dataclass(frozen=True)
-class Refund:
-    user_id: int
-    revoked_key: str | None
 
 
 @dataclass(frozen=True)
@@ -282,9 +285,11 @@ class Database:
         if current and current.tariff == tariff:
             key = current.key
         else:
-            if current:
-                revoked = await self._revoke(current.id)
             key = await self._take_free_key(user_id, tariff, now)
+            # Старый ключ снимаем, только когда есть новый: при пустом пуле клиент до выдачи
+            # ключа нового тарифа работает по прежнему, а не остаётся совсем без доступа
+            if current and key is not None:
+                revoked = await self._revoke(current.id)
         return Activation(tariff, expires, key, revoked, extended)
 
     async def _take_free_key(self, user_id: int, tariff: str, now: datetime) -> str | None:
@@ -300,20 +305,26 @@ class Database:
         )
         return row["key"]
 
-    async def _revoke(self, key_id: int) -> str | None:
+    async def _revoke(self, key_id: int, reuse: bool = True) -> str | None:
         """Снимает ключ с пользователя. Возвращает ключ, если его надо отключить у провайдера.
 
         Ключ, который клиент ни разу не видел (работа через наш эндпоинт), безопасно
         вернуть в пул: тогда возвращается None и делать ничего не нужно.
+        reuse=False — ключ заменяют потому, что он не работает: в пул его не возвращаем.
         """
         row = await self._one("SELECT key, exposed FROM api_keys WHERE id=?", (key_id,))
         if row is None:
             return None
         if not row["exposed"]:
-            await self.conn.execute(
-                "UPDATE api_keys SET status='free', user_id=NULL, assigned_at=NULL WHERE id=?",
-                (key_id,),
-            )
+            if reuse:
+                await self.conn.execute(
+                    "UPDATE api_keys SET status='free', user_id=NULL, assigned_at=NULL WHERE id=?",
+                    (key_id,),
+                )
+            else:
+                await self.conn.execute(
+                    "UPDATE api_keys SET status='revoked' WHERE id=?", (key_id,)
+                )
             return None
         await self.conn.execute("UPDATE api_keys SET status='revoke' WHERE id=?", (key_id,))
         return row["key"]
@@ -328,24 +339,63 @@ class Database:
             existing = await self._one("SELECT * FROM api_keys WHERE key=?", (key,))
             if existing and existing["status"] == "active" and existing["user_id"] != user_id:
                 raise KeyConflictError(f"Ключ уже выдан пользователю {existing['user_id']}")
+            if existing and existing["status"] in ("revoke", "revoked"):
+                # такой ключ видел прежний клиент и он ждёт (или прошёл) отключения
+                raise KeyConflictError("Ключ отозван — выдайте другой")
             current = await self.get_active_key(user_id)
             revoked = None
             if current and current.key != key:
-                revoked = await self._revoke(current.id)
+                # Замена ключа того же тарифа — обычно потому, что он не работает: в пул его не
+                # возвращаем. Ключ прежнего тарифа (остался после смены тарифа) исправен
+                revoked = await self._revoke(current.id, reuse=current.tariff != sub.tariff)
             await conn.execute(
                 "INSERT INTO api_keys (tariff, key, user_id, status, assigned_at, exposed) "
                 "VALUES (?, ?, ?, 'active', ?, ?) ON CONFLICT(key) DO UPDATE SET "
                 "tariff=excluded.tariff, user_id=excluded.user_id, status='active', "
-                "assigned_at=excluded.assigned_at, exposed=excluded.exposed",
+                "assigned_at=excluded.assigned_at, "
+                # Если клиент уже видел ключ, он остаётся «засвеченным». Свободный ключ из пула
+                # не видел никто (у только что добавленного exposed=1 по умолчанию)
+                "exposed=CASE WHEN api_keys.status='free' THEN excluded.exposed "
+                "ELSE MAX(api_keys.exposed, excluded.exposed) END",
                 (sub.tariff, key, user_id, _iso(now), 0 if self.hide_keys else 1),
             )
             return sub, revoked
 
+    async def assign_waiting(self, tariff: str) -> list[tuple[int, str, str | None]]:
+        """Раздаёт свободные ключи тем, кто оплатил тариф, пока пул был пуст.
+
+        Возвращает [(user_id, ключ провайдера, ключ на отключение)] — им надо отправить ключ.
+        Третий элемент — ключ прежнего тарифа, если клиент сменил тариф при пустом пуле.
+        Первыми получают те, у кого подписка кончается раньше (то есть купившие раньше).
+        """
+        now = utcnow()
+        async with self._tx():
+            rows = await self._all(
+                "SELECT s.user_id FROM subscriptions s WHERE s.tariff=? AND s.expires_at > ? "
+                "AND NOT EXISTS (SELECT 1 FROM api_keys k "
+                "WHERE k.user_id=s.user_id AND k.status='active' AND k.tariff=s.tariff) "
+                "ORDER BY s.expires_at, s.user_id",
+                (tariff, _iso(now)),
+            )
+            assigned = []
+            for row in rows:
+                old = await self.get_active_key(row["user_id"])
+                key = await self._take_free_key(row["user_id"], tariff, now)
+                if key is None:
+                    break
+                revoked = await self._revoke(old.id) if old else None
+                assigned.append((row["user_id"], key, revoked))
+            return assigned
+
     async def add_keys(self, tariff: str, keys: list[str]) -> int:
         async with self._tx() as conn:
             before = conn.total_changes
+            # Ключ, снятый через /givekey как нерабочий (клиент его не видел), админ может
+            # вернуть в пул, добавив снова: иначе ошибочно снятый рабочий ключ терялся навсегда
             await conn.executemany(
-                "INSERT OR IGNORE INTO api_keys (tariff, key) VALUES (?, ?)",
+                "INSERT INTO api_keys (tariff, key) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET "
+                "tariff=excluded.tariff, status='free', user_id=NULL, assigned_at=NULL "
+                "WHERE api_keys.status='revoked' AND api_keys.exposed=0",
                 [(tariff, k) for k in keys],
             )
             return conn.total_changes - before
@@ -435,10 +485,11 @@ class Database:
             if cur.rowcount == 0:
                 return None
             order = await self.get_crypto_order(order_id)
+            charge_id = f"{CRYPTO_PREFIX}{order_id}"
             await conn.execute(
                 "INSERT INTO payments (user_id, tariff, stars, charge_id, created_at) "
                 "VALUES (?, ?, 0, ?, ?)",
-                (order.user_id, order.tariff, f"{CRYPTO_PREFIX}{order_id}", _iso(now)),
+                (order.user_id, order.tariff, charge_id, _iso(now)),
             )
             return order, await self._apply(order.user_id, order.tariff, days, now)
 
@@ -455,10 +506,12 @@ class Database:
 
     async def confirm_web_login(self, token: str, user_id: int) -> bool:
         async with self._tx() as conn:
+            # Повторное нажатие тем же человеком — тоже успех, а не «ссылка устарела».
+            # Подтвердить вход другим аккаунтом по-прежнему нельзя
             cur = await conn.execute(
-                "UPDATE web_logins SET user_id=? WHERE token=? AND user_id IS NULL "
-                "AND expires_at > ?",
-                (user_id, token, _iso(utcnow())),
+                "UPDATE web_logins SET user_id=? WHERE token=? "
+                "AND (user_id IS NULL OR user_id=?) AND expires_at > ?",
+                (user_id, token, user_id, _iso(utcnow())),
             )
             return cur.rowcount > 0
 
@@ -503,6 +556,24 @@ class Database:
         async with self._tx() as conn:
             await conn.execute("DELETE FROM web_sessions WHERE id=?", (session_id,))
 
+    # --- поддержка ---
+
+    async def add_support_message(self, chat_id: int, message_id: int, user_id: int) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO support_messages "
+                "(chat_id, message_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+                (chat_id, message_id, user_id, _iso(utcnow())),
+            )
+
+    async def support_user(self, chat_id: int, message_id: int) -> int | None:
+        """Клиент, чьё обращение админ получил сообщением message_id."""
+        row = await self._one(
+            "SELECT user_id FROM support_messages WHERE chat_id=? AND message_id=?",
+            (chat_id, message_id),
+        )
+        return row["user_id"] if row else None
+
     # --- платежи ---
 
     async def get_payment(self, charge_id: str) -> Payment | None:
@@ -512,30 +583,6 @@ class Database:
         return Payment(
             row["user_id"], row["tariff"], row["stars"], row["charge_id"], bool(row["refunded"])
         )
-
-    async def refund(self, charge_id: str, days: int) -> Refund | None:
-        """Помечает платёж возвращённым и отнимает оплаченные дни у подписки."""
-        now = utcnow()
-        async with self._tx() as conn:
-            pay = await self.get_payment(charge_id)
-            if pay is None or pay.refunded:
-                return None
-            await conn.execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge_id,))
-            sub = await self.get_subscription(pay.user_id)
-            revoked = None
-            if sub and sub.tariff == pay.tariff:
-                expires = sub.expires_at - timedelta(days=days)
-                ended = expires <= now
-                if ended:
-                    expires = now
-                    key = await self.get_active_key(pay.user_id)
-                    if key:
-                        revoked = await self._revoke(key.id)
-                await conn.execute(
-                    "UPDATE subscriptions SET expires_at=?, notified_expired=? WHERE user_id=?",
-                    (_iso(expires), int(ended), pay.user_id),
-                )
-            return Refund(pay.user_id, revoked)
 
     # --- напоминания и окончание подписок ---
 
@@ -548,10 +595,16 @@ class Database:
         )
         return [_subscription(r) for r in rows]
 
-    async def mark_reminded(self, user_id: int) -> None:
+    async def mark_reminded(self, user_id: int, expires_at: datetime) -> None:
+        """Отмечает напоминание о периоде, который кончается в expires_at. Если клиент
+        успел продлить подписку, пока шла рассылка, флаг нового периода не трогаем."""
         async with self._tx() as conn:
+            # datetime() сравнивает моменты, а не строки: дата, поправленная в базе вручную
+            # в другом формате («Z» вместо «+00:00»), иначе давала напоминание каждые 10 минут
             await conn.execute(
-                "UPDATE subscriptions SET notified_soon=1 WHERE user_id=?", (user_id,)
+                "UPDATE subscriptions SET notified_soon=1 "
+                "WHERE user_id=? AND datetime(expires_at)=datetime(?)",
+                (user_id, _iso(expires_at)),
             )
 
     async def expire_due(self) -> list[tuple[Subscription, str | None]]:
@@ -592,7 +645,11 @@ class Database:
         return await self.get_client_key(user_id)  # type: ignore[return-value]
 
     async def rotate_client_key(self, user_id: int) -> str:
-        """Перевыпуск: старый ключ сразу перестаёт работать."""
+        """Перевыпуск: старый ключ сразу перестаёт работать.
+
+        Заодно закрываются входы на сайт: ключ перевыпускают, когда доступ мог попасть
+        к чужому, а сайт показывает ключ — иначе чужой браузер сразу увидел бы новый.
+        """
         key = CLIENT_KEY_PREFIX + secrets.token_urlsafe(32)
         async with self._tx() as conn:
             await conn.execute(
@@ -601,6 +658,7 @@ class Database:
                 "created_at=excluded.created_at",
                 (user_id, key, _iso(utcnow())),
             )
+            await conn.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
         return key
 
     async def user_by_client_key(self, key: str) -> int | None:
@@ -609,22 +667,28 @@ class Database:
 
     # --- статистика ---
 
-    async def stats(self) -> dict:
+    async def stats(self, exclude_users: list[int] | tuple[int, ...] = ()) -> dict:
+        """exclude_users — кого не считать клиентами (админы тоже пишут боту, выдают себе
+        подписки и проверяют оплату): они не попадают ни в пользователей, ни в подписки,
+        ни в оплаты."""
         now = _iso(utcnow())
-        users = await self._one("SELECT COUNT(*) AS n FROM users")
+        skip = tuple(exclude_users)
+        marks = ",".join("?" * len(skip))
+        users = await self._one(f"SELECT COUNT(*) AS n FROM users WHERE id NOT IN ({marks})", skip)
         active = await self._all(
-            "SELECT tariff, COUNT(*) AS n FROM subscriptions WHERE expires_at > ? GROUP BY tariff",
-            (now,),
+            "SELECT tariff, COUNT(*) AS n FROM subscriptions WHERE expires_at > ? "
+            f"AND user_id NOT IN ({marks}) GROUP BY tariff",
+            (now, *skip),
         )
         pays = await self._one(
             "SELECT COUNT(*) AS n, COALESCE(SUM(stars), 0) AS stars FROM payments "
-            "WHERE refunded=0 AND charge_id NOT LIKE ?",
-            (CRYPTO_PREFIX + "%",),
+            f"WHERE refunded=0 AND charge_id NOT LIKE ? AND user_id NOT IN ({marks})",
+            (CRYPTO_PREFIX + "%", *skip),
         )
         crypto = await self._all(
             "SELECT tariff, COUNT(*) AS n FROM payments WHERE refunded=0 AND charge_id LIKE ? "
-            "GROUP BY tariff",
-            (CRYPTO_PREFIX + "%",),
+            f"AND user_id NOT IN ({marks}) GROUP BY tariff",
+            (CRYPTO_PREFIX + "%", *skip),
         )
         return {
             "users": users["n"] if users else 0,

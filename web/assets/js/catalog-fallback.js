@@ -17,8 +17,8 @@ const vid = m("video");
 
 export const FALLBACK_CATALOG = Object.freeze({
   shop_name: "unknown shop",
-  bot_username: "dsfklgjfsdkbot",
-  api_base_url: "https://useitai.top/api/v1",
+  bot_username: "UnknownAiShopBot",
+  api_base_url: "https://154-83-140-29.sslip.io/v1",
   subscription_days: 30,
   models: [
     t("gpt-6-astra", "GPT-6 Astra", "OpenAI", CLAUDE),
@@ -79,7 +79,7 @@ export const FALLBACK_CATALOG = Object.freeze({
       title: "Pro",
       emoji: "⚡️",
       tagline: "Для ежедневной работы в IDE и скриптах",
-      price_usd: 33,
+      price_usd: 50,
       stars: null,
       features: [
         "Безлимит на генерацию изображений",
@@ -94,7 +94,7 @@ export const FALLBACK_CATALOG = Object.freeze({
       title: "Unlimited",
       emoji: "👑",
       tagline: "Без ограничений, 24/7",
-      price_usd: 80,
+      price_usd: 100,
       stars: null,
       features: [
         "Полный безлимит на все модели",

@@ -1,6 +1,7 @@
 // Account: subscription badge, avatar menu and the «Подписка и ключ» panel.
 
 import * as api from "./api.js";
+import * as store from "./store.js";
 import { h, $, icons, toast, plural, formatDate, copyWithFeedback } from "./utils.js";
 import { createDialog, openPaymentModal, openTariffsModal } from "./modals.js";
 
@@ -106,6 +107,7 @@ export function initAccount(ctx) {
         return;
       }
     }
+    store.clearAccountData();
     window.location.href = "/";
   }
 

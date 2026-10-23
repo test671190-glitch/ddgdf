@@ -446,7 +446,7 @@ data: [DONE]</pre>
         <input class="search" id="model-search" type="search" placeholder="Найти: claude, kling, gemini…" autocomplete="off">
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="models">
           <thead><tr><th>ID</th><th>Модель</th><th>Разработчик</th><th>reasoning_effort</th></tr></thead>
           <tbody id="models-body"></tbody>
         </table>
@@ -563,9 +563,14 @@ data: [DONE]</pre>
           <thead><tr><th>HTTP</th><th>code</th><th>Что произошло и что делать</th></tr></thead>
           <tbody>
             <tr><td class="num">400</td><td><code>invalid_request</code></td><td>Неверные параметры запроса. Проверьте имена и значения полей.</td></tr>
+            <tr><td class="num">400</td><td><code>https_required</code></td><td>Запрос пришёл по <code>http://</code>. Укажите адрес с <code>https://</code> и перевыпустите ключ в боте: по http он передавался открытым текстом.</td></tr>
             <tr><td class="num">401</td><td><code>invalid_api_key</code></td><td>Ключ не передан или недействителен. Проверьте заголовок и ключ в <code>/profile</code>.</td></tr>
             <tr><td class="num">402</td><td><code>subscription_required</code></td><td>Нет активного тарифа. Продлите подписку в боте.</td></tr>
             <tr><td class="num">404</td><td><code>model_not_found</code></td><td>Модели с таким ID нет. Сверьтесь с разделом <a href="#models">Модели</a>.</td></tr>
+            <tr><td class="num">404</td><td><code>not_found</code></td><td>Такого эндпоинта нет. Проверьте путь: он начинается с <code>/v1/</code>, например <code>/v1/chat/completions</code>.</td></tr>
+            <tr><td class="num">413</td><td><code>request_too_large</code></td><td>Тело запроса больше 25 МБ. Уменьшите или сожмите вложенные изображения.</td></tr>
+            <tr><td class="num">429</td><td><code>rate_limited</code></td><td>Больше 100 запросов в секунду с одного адреса. Повторите через секунду.</td></tr>
+            <tr><td class="num">429</td><td><code>too_many_concurrent_requests</code></td><td>Больше 20 одновременных запросов на один ключ. Дождитесь ответов на текущие и повторите.</td></tr>
             <tr><td class="num">429</td><td><code>plan_limit_reached</code></td><td>Дневной лимит тарифа исчерпан. Доступ вернётся после сброса, время сброса есть в заголовке <code>X-Plan-Reset</code>.</td></tr>
             <tr><td class="num">500</td><td><code>server_error</code></td><td>Внутренняя ошибка. Повторите запрос через несколько секунд.</td></tr>
             <tr><td class="num">502</td><td><code>upstream_error</code></td><td>Сервис моделей временно не отвечает. Повторите запрос.</td></tr>
@@ -579,7 +584,7 @@ data: [DONE]</pre>
     <section class="sheet glass" id="limits">
       <span class="kicker">Тарифы</span>
       <h2>Лимиты и тарифы</h2>
-      <p class="prose">Отдельного ограничения на число запросов в минуту нет. Объём работы зависит только от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
+      <p class="prose">С одного адреса принимается до 100 запросов в секунду (сверх — <code>429 rate_limited</code>), одновременно на один ключ обрабатывается до 20 запросов (сверх — <code>429 too_many_concurrent_requests</code>). Лишние запросы можно сразу повторить. Ограничений по числу запросов в минуту или в день нет. Объём работы зависит от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
 <!-- @plans -->
       <p class="prose">Остаток по тарифу приходит в заголовках каждого ответа:</p>
       <div class="table-wrap">
@@ -686,8 +691,10 @@ data: [DONE]</pre>
         return;
       }
       body.innerHTML = rows.map(function (m) {
+        // .m-name — название под ID: на телефоне колонки «Модель» и «Разработчик» скрыты,
+        // иначе таблица уезжала вбок и названия выглядели обрезанными
         return '<tr><td><span class="type-dot" style="background:var(' + TYPE_VAR[m[2]] + ')"></span><button class="id-btn" type="button" title="Скопировать ID" data-id="' + m[0] + '">' + m[0] +
-          "</button></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
+          '</button><span class="m-name">' + m[1] + " · " + m[3] + "</span></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
       }).join("");
     }
     body.addEventListener("click", function (e) {
@@ -848,15 +855,33 @@ data: [DONE]</pre>
       }
       if (reduce.matches) draw();
     });
-    canvas.addEventListener("pointerleave", function () { hovered = null; tip.hidden = true; drag = null; });
+    canvas.addEventListener("pointerleave", function (e) {
+      drag = null;
+      // палец «уходит» сразу после касания: подсказку после тапа прячет таймер, а не это событие
+      if (e.pointerType !== "mouse") return;
+      hovered = null;
+      tip.hidden = true;
+    });
     canvas.addEventListener("pointercancel", function () { drag = null; });
     canvas.addEventListener("pointerdown", function (e) { drag = { x: e.clientX, y: e.clientY, moved: false }; canvas.setPointerCapture(e.pointerId); });
+    var tipTimer;
     canvas.addEventListener("pointerup", function (e) {
       var wasDrag = drag && drag.moved;
       drag = null;
       if (wasDrag) return;
       var p = pick(e);
-      if (p) copyText(p.m[0], null);
+      if (!p) return;
+      copyText(p.m[0], null);
+      if (e.pointerType !== "mouse") {
+        // на телефоне нет наведения: без подсказки клиент не видел, какую модель скопировал
+        hovered = p;
+        tip.hidden = false;
+        tip.innerHTML = "<b>" + p.m[1] + "</b><code>" + p.m[0] + "</code>";
+        tip.style.left = p.sx + "px";
+        tip.style.top = p.sy + "px";
+        clearTimeout(tipTimer);
+        tipTimer = setTimeout(function () { hovered = null; tip.hidden = true; }, 2200);
+      }
     });
 
     readColors();

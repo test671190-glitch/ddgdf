@@ -5,6 +5,7 @@
 поэтому ключ не нужно вводить в браузере.
 """
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -28,10 +29,11 @@ from bot.catalog import (
     VIDEO_MODELS,
 )
 from bot.config import Settings
-from bot.db import Database, utcnow
+from bot.db import Database
 from bot.services.access import shown_key
 from bot.services.crypto import CryptoPayments
 from bot.services.cryptopay import CryptoPayError
+from bot.texts import days_left
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +286,7 @@ class WebApp:
                 "tariff": sub.tariff,
                 "title": tariff.title if tariff else sub.tariff,
                 "expires_at": sub.expires_at.isoformat(),
-                "days_left": max(0, (sub.expires_at - utcnow()).days),
+                "days_left": days_left(sub),
                 "active": sub.is_active,
             }
         return web.json_response(
@@ -326,7 +328,9 @@ class WebApp:
         status = order.status
         if self.crypto is not None and status == "pending":
             try:
-                status = await self.crypto.check(order)
+                # shield: если браузер закроет запрос посреди проверки, заказ уже мог стать
+                # оплаченным, а выдача ключа и уведомления не должны отмениться вместе с ним
+                status = await asyncio.shield(self.crypto.check(order))
             except CryptoPayError as e:
                 logger.warning("Crypto Pay: %s", e)
         public = {"approved": "paid", "pending": "pending"}.get(status, "expired")
@@ -349,7 +353,10 @@ class WebApp:
     def _session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
             self._http = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=600)
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=600),
+                # сессия общая на всех клиентов: cookie, поставленная провайдером на запрос
+                # одного клиента, иначе уходила бы с запросами другого (как в gateway.py)
+                cookie_jar=aiohttp.DummyCookieJar(),
             )
         return self._http
 
@@ -381,10 +388,18 @@ class WebApp:
         if body is not None:
             headers["Content-Type"] = "application/json"
         try:
-            async with self._session().request(method, url, data=body, headers=headers) as up:
-                if up.status == 401:
-                    # Провайдер отклонил ключ из пула. Отдать 401 нельзя: сайт решит,
-                    # что истекла сессия, и попросит войти заново (как в gateway.py)
+            # Без редиректов: aiohttp прошёл бы их сам и унёс ключ провайдера на любой путь
+            # того же хоста, а редирект на внутренний адрес отдал бы его ответ в браузер
+            async with self._session().request(
+                method, url, data=body, headers=headers, allow_redirects=False
+            ) as up:
+                if 300 <= up.status < 400:
+                    logger.warning("Провайдер ответил редиректом %s на %s", up.status, path)
+                    return api_error(502, "upstream_error", "API моделей ответило с ошибкой")
+                if up.status in (401, 402, 403):
+                    # Провайдер отклонил ключ из пула (отозван, у аккаунта кончился тариф).
+                    # Отдать 401/402 нельзя: сайт решит, что истекла сессия или у клиента нет
+                    # подписки, хотя проблема наша (как в gateway.py)
                     logger.error("Ключ провайдера отклонён (%s) на %s", up.status, path)
                     return api_error(
                         503,

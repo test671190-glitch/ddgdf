@@ -2,7 +2,8 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CopyTextButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.catalog import FAQ, MODEL_CATEGORIES, TARIFFS_ON_SALE, Tariff
+from bot.catalog import FAQ, FAQ_BUTTONS, MODEL_CATEGORIES, TARIFFS_ON_SALE, Tariff
+from bot.db import Subscription
 
 # Цвета кнопок Telegram: primary — синяя, success — зелёная, danger — красная
 PRIMARY = "primary"
@@ -13,7 +14,7 @@ BACK = "← В меню"
 
 
 class Menu(CallbackData, prefix="menu"):
-    section: str  # main | tariffs | models | profile | api | faq | support
+    section: str  # main | tariffs | models | profile | api | faq | site | support
 
 
 class ModelsPage(CallbackData, prefix="models"):
@@ -48,6 +49,19 @@ class RotateKey(CallbackData, prefix="rotate"):
     confirm: bool
 
 
+class SupportWrite(CallbackData, prefix="support"):
+    """Начать или отменить сообщение в поддержку."""
+
+    cancel: bool = False
+
+
+class SupportAnswer(CallbackData, prefix="sanswer"):
+    """Админ отвечает клиенту user_id (или отменяет ответ)."""
+
+    user_id: int
+    cancel: bool = False
+
+
 def rotate_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Да, перевыпустить", callback_data=RotateKey(confirm=True), style=DANGER)
@@ -66,20 +80,28 @@ def web_login_keyboard(token: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def main_menu(has_subscription: bool = False) -> InlineKeyboardMarkup:
+def main_menu(has_subscription: bool = False, renewable: bool = True) -> InlineKeyboardMarkup:
+    """renewable=False — тариф клиента снят с продажи: продлить его нельзя, только сменить."""
+    if has_subscription:
+        label = "Продлить подписку" if renewable else "Сменить тариф"
+    else:
+        label = "Купить подписку"
     builder = InlineKeyboardBuilder()
-    builder.button(
-        text="Продлить подписку" if has_subscription else "Купить подписку",
-        callback_data=Menu(section="tariffs"),
-        style=PRIMARY,
-    )
+    builder.button(text=label, callback_data=Menu(section="tariffs"), style=PRIMARY)
     builder.button(text="Профиль", callback_data=Menu(section="profile"))
     builder.button(text="Подключение", callback_data=Menu(section="api"))
     builder.button(text="Модели", callback_data=Menu(section="models"))
     builder.button(text="Вопросы", callback_data=Menu(section="faq"))
+    builder.button(text="Сайт", callback_data=Menu(section="site"))
     builder.button(text="Поддержка", callback_data=Menu(section="support"))
-    builder.adjust(1, 2, 2, 1)
+    builder.adjust(1, 2, 2, 2)
     return builder.as_markup()
+
+
+def main_menu_for(sub: Subscription | None) -> InlineKeyboardMarkup:
+    """Главное меню по подписке клиента: продлить, сменить снятый с продажи тариф или купить."""
+    has_subscription = sub is not None and sub.is_active
+    return main_menu(has_subscription, sub is None or sub.tariff in TARIFFS_ON_SALE)
 
 
 def back(section: str = "main", text: str = BACK) -> InlineKeyboardMarkup:
@@ -125,6 +147,16 @@ def crypto_pay_keyboard(tariff: Tariff, order_id: int, pay_url: str) -> InlineKe
     builder.button(text=f"Оплатить ${tariff.price_usd}", url=pay_url, style=SUCCESS)
     builder.button(text="Проверить оплату", callback_data=CryptoCheck(order_id=order_id))
     builder.button(text="← Другой способ", callback_data=TariffPage(code=tariff.code))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def crypto_expired_keyboard(tariff_code: str) -> InlineKeyboardMarkup:
+    """Счёт истёк, клиент ещё ничего не купил: предлагаем новый счёт, а не «Продлить»."""
+    builder = InlineKeyboardBuilder()
+    if tariff_code in TARIFFS_ON_SALE:
+        builder.button(text="Новый счёт", callback_data=CryptoPay(code=tariff_code), style=PRIMARY)
+    builder.button(text="← Тарифы", callback_data=Menu(section="tariffs"))
     builder.adjust(1)
     return builder.as_markup()
 
@@ -179,7 +211,7 @@ def models_list_keyboard(current: str) -> InlineKeyboardMarkup:
 def faq_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for i, (question, _) in enumerate(FAQ):
-        builder.button(text=question, callback_data=FaqItem(index=i))
+        builder.button(text=FAQ_BUTTONS.get(question, question), callback_data=FaqItem(index=i))
     builder.button(text=BACK, callback_data=Menu(section="main"))
     builder.adjust(1)
     return builder.as_markup()
@@ -195,12 +227,56 @@ def api_keyboard(docs_url: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def support_keyboard(support_username: str) -> InlineKeyboardMarkup:
+def site_keyboard(site_url: str, docs_url: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    if support_username:
-        builder.button(
-            text="Написать в поддержку", url=f"https://t.me/{support_username}", style=PRIMARY
-        )
+    if site_url:
+        builder.button(text="Открыть сайт", url=site_url, style=PRIMARY)
+    if docs_url:
+        builder.button(text="Документация API", url=docs_url)
     builder.button(text=BACK, callback_data=Menu(section="main"))
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def support_keyboard(support_username: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Написать в поддержку", callback_data=SupportWrite(), style=PRIMARY)
+    if support_username:
+        builder.button(text=f"@{support_username}", url=f"https://t.me/{support_username}")
+    builder.button(text=BACK, callback_data=Menu(section="main"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def support_cancel_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Отмена", callback_data=SupportWrite(cancel=True))
+    return builder.as_markup()
+
+
+def support_answer_keyboard() -> InlineKeyboardMarkup:
+    """Под ответом поддержки: продолжить переписку или вернуться в меню."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Ответить", callback_data=SupportWrite(), style=PRIMARY)
+    builder.button(text=BACK, callback_data=Menu(section="main"))
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def support_reply_keyboard(user_id: int, name: str, again: bool = False) -> InlineKeyboardMarkup:
+    """У админа под карточкой обращения и каждой копией сообщения клиента: на кнопке видно,
+    чьё это сообщение и кому уйдёт ответ."""
+    name = name if len(name) <= 24 else name[:23] + "…"
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=f"✍️ {'Ответить ещё' if again else 'Ответить'}: {name} · {user_id}",
+        callback_data=SupportAnswer(user_id=user_id),
+        style=PRIMARY,
+    )
+    return builder.as_markup()
+
+
+def support_answer_cancel_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Отмена", callback_data=SupportAnswer(user_id=user_id, cancel=True))
     return builder.as_markup()

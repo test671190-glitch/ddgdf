@@ -12,11 +12,14 @@
 
 Результат:
   docs/dist/index.html, docs/dist/api.html     — полные HTML-документы для Netlify
+  docs/dist/_headers                           — заголовки безопасности для Netlify (CSP)
   docs/preview/index.html, docs/preview/api.html — то же без <html>/<head> (для превью)
 
 Запуск: .venv\\Scripts\\python.exe scripts/build_docs.py
 """
 
+import base64
+import hashlib
 import re
 import sys
 from html import escape
@@ -61,6 +64,28 @@ HEAD = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>:root{color-scheme:dark}body{margin:0}[hidden]{display:none!important}</style>
 """
+
+# Netlify берёт заголовки из файла _headers в загружаемой папке: netlify.toml при ручной
+# загрузке docs/dist не применяется. Свои инлайн-скрипты (и importmap) разрешены по хешу —
+# скрипт, внедрённый в страницу со стороны, браузер не выполнит
+INLINE_SCRIPT = re.compile(r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", re.S)
+CSP = (
+    "default-src 'none'; "
+    "script-src 'self' https://cdn.jsdelivr.net {hashes}; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+}
 
 
 def header(active: str) -> str:
@@ -139,16 +164,35 @@ def standalone(body: str) -> str:
     return f"{HEAD}{head_part}</style>\n</head>\n<body>\n{rest.lstrip()}\n</body>\n</html>\n"
 
 
+def script_hashes(html: str) -> set[str]:
+    """CSP-хеши инлайн-скриптов страницы (браузер считает их от текста между тегами)."""
+    return {
+        "'sha256-" + base64.b64encode(hashlib.sha256(code.encode()).digest()).decode() + "'"
+        for code in INLINE_SCRIPT.findall(html)
+    }
+
+
+def headers_file(pages: list[str]) -> str:
+    hashes = sorted(set().union(*(script_hashes(html) for html in pages)))
+    values = {"Content-Security-Policy": CSP.format(hashes=" ".join(hashes)), **HEADERS}
+    return "/*\n" + "".join(f"  {name}: {value}\n" for name, value in values.items())
+
+
 def build() -> list[Path]:
     DIST.mkdir(parents=True, exist_ok=True)
     PREVIEW.mkdir(parents=True, exist_ok=True)
     out = []
+    pages = []
     for name, filename in PAGES.items():
         body = render(name)
         (PREVIEW / filename).write_text(body, encoding="utf-8")
         target = DIST / filename
-        target.write_text(standalone(body), encoding="utf-8")
+        pages.append(standalone(body))
+        target.write_text(pages[-1], encoding="utf-8")
         out.append(target)
+    headers = DIST / "_headers"
+    headers.write_text(headers_file(pages), encoding="utf-8", newline="\n")
+    out.append(headers)
     return out
 
 

@@ -2,12 +2,14 @@
 //   us_chats  — array of chats {id, title, type, model, createdAt, updatedAt, messages:[...]}
 //   us_draft  — {model, text, reasoning?} handed from the landing page to the app
 //   us_prefs  — UI preferences (last model, option values, sidebar state)
+//   us_owner  — id of the account the chat history belongs to
 
 import { uid } from "./utils.js";
 
 const CHATS_KEY = "us_chats";
 const DRAFT_KEY = "us_draft";
 const PREFS_KEY = "us_prefs";
+const OWNER_KEY = "us_owner";
 
 function read(key, fallback) {
   try {
@@ -35,6 +37,34 @@ function remove(key) {
   } catch {
     /* storage unavailable */
   }
+}
+
+/* ---------------- owner ---------------- */
+
+/**
+ * Chat history belongs to one account. When another account signs in in this browser, the
+ * previous history is wiped: otherwise the next person saw someone else's chats and could
+ * send them to a model with their own key. Returns true if history was wiped.
+ */
+export function bindOwner(userId) {
+  const id = String(userId ?? "");
+  if (!id) return false;
+  const owner = read(OWNER_KEY, null);
+  const wiped = owner !== null && String(owner) !== id;
+  if (wiped) {
+    remove(CHATS_KEY);
+    cache = null;
+  }
+  write(OWNER_KEY, id);
+  return wiped;
+}
+
+/** Logout: the account's chats and draft leave the browser with it. */
+export function clearAccountData() {
+  remove(CHATS_KEY);
+  remove(DRAFT_KEY);
+  remove(OWNER_KEY);
+  cache = null;
 }
 
 /* ---------------- draft ---------------- */

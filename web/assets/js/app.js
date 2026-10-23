@@ -27,6 +27,11 @@ let flow = null;
 
 /* ---------------- context API used by modules ---------------- */
 
+/** Chat history in this browser belongs to whoever signed in; another account wipes it. */
+function adoptUser(me) {
+  if (me && me.user && store.bindOwner(me.user.id) && ctx.started) window.location.reload();
+}
+
 ctx.requireLogin = () => showAuth({ overlay: ctx.started });
 ctx.onUnauthorized = () => {
   ctx.me = null;
@@ -37,6 +42,7 @@ ctx.refreshMe = async () => {
   try {
     const me = await api.getMe();
     if (me) {
+      adoptUser(me);
       ctx.me = me;
       if (ctx.account) ctx.account.renderBadge();
     } else ctx.onUnauthorized();
@@ -80,6 +86,7 @@ async function boot() {
     showAuth();
     return;
   }
+  adoptUser(me);
   startApp();
 }
 
@@ -123,6 +130,7 @@ $("#auth-retry").addEventListener("click", async () => {
   btn.disabled = true;
   try {
     const me = await api.getMe();
+    adoptUser(me);
     ctx.me = me;
     if (me) {
       authScreen.hidden = true;
@@ -148,6 +156,7 @@ async function onLoggedIn() {
     if (flow) flow.restart();
     return;
   }
+  adoptUser(me);
   ctx.me = me;
   if (flow) {
     flow.destroy();

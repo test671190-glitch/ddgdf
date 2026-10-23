@@ -195,8 +195,10 @@
   @keyframes rise { from { transform: translateY(46px) scale(0.975); opacity: 0.3; } }
 
   .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 6px 0 16px; padding: 0; list-style: none; counter-reset: s; }
-  .steps li { counter-increment: s; margin: 0; padding: 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 10px 26px -18px rgba(0, 0, 0, 0.45); display: grid; gap: 8px; align-content: start; }
-  .steps li::before { content: counter(s); font: 800 22px/1 var(--font-display); color: var(--signal); }
+  /* block, not grid: in a grid every text run and <code> inside the step became its own row,
+     so "по команде /profile." broke into three lines */
+  .steps li { counter-increment: s; margin: 0; padding: 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 10px 26px -18px rgba(0, 0, 0, 0.45); display: block; }
+  .steps li::before { content: counter(s); display: block; margin-bottom: 8px; font: 800 22px/1 var(--font-display); color: var(--signal); }
 
   .endpoint { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 16px; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge); font: 500 15px/1.3 var(--font-mono); }
   .method { font: 700 11.5px/1 var(--font-mono); letter-spacing: 0.06em; padding: 7px 10px; border-radius: 999px; }
@@ -296,8 +298,10 @@
   footer { padding-block: 0 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
   footer .inner { max-width: 1200px; margin: 0 auto; padding: 18px 24px; border-radius: 999px; color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 
-  .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translate(-50%, 140%); padding: 12px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1); }
-  .toast.show { transform: translate(-50%, 0); }
+  /* hidden: moved below the screen by its own height plus the bottom offset (140% of its height
+     left a dark sliver peeking at the bottom edge on phones) and made invisible */
+  .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translate(-50%, calc(100% + 24px + env(safe-area-inset-bottom, 0px))); visibility: hidden; padding: 12px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1), visibility 0s linear 0.45s; }
+  .toast.show { transform: translate(-50%, 0); visibility: visible; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1); }
 
   /* Springy hover: controls swell under the pointer and press in on click, like iOS glass buttons. */
   .pill-btn, .chip-btn, .copy, .legend .chip, .id-btn, .topnav a, .segmented button, .wordmark {
@@ -353,9 +357,37 @@
     .topbar .bar { padding-right: 6px; }
     .wordmark { font-size: 15px; }
     .topnav a { padding: 8px 12px; font-size: 13px; }
+    .hero { padding-block: 36px 28px; }
+    /* the hero grid aligns items to the start, so the row of stats shrank to its content
+       and the tiles never stretched; the long label then overflowed its tile */
+    .stats { justify-self: stretch; }
     .stat { min-width: 0; flex: 1 1 90px; padding: 14px; }
+    .stat span { letter-spacing: 0.04em; overflow-wrap: anywhere; }
     #orbit { height: 300px; }
-    .glass { -webkit-backdrop-filter: blur(18px) saturate(170%); backdrop-filter: blur(18px) saturate(170%); }
+    table.models th:nth-child(2), table.models th:nth-child(3),
+    table.models td:nth-child(2), table.models td:nth-child(3) { display: none; }
+    table.models .m-name { display: block; margin: 4px 0 0 16px; font-size: 13px; color: var(--muted); }
+    table.models th, table.models td { padding: 10px 12px; }
+  }
+  .m-name { display: none; }
+
+  /* Phones. A blur under every card over a constantly re-rendered WebGL scene made the GPU
+     re-blur the whole page each frame while scrolling: animations stuttered, cards flickered
+     and the page jumped. On phones: no WebGL scene (scene.html skips it), the blur only on the
+     two small sticky bars, no scroll-driven card animation, no blended grain layer. */
+  @media (max-width: 760px), (pointer: coarse) {
+    .glass, .code { -webkit-backdrop-filter: none; backdrop-filter: none; }
+    .glass { background: rgba(24, 27, 37, 0.86); }
+    .code { background: rgba(5, 6, 9, 0.9); }
+    .topbar .bar, nav.toc {
+      background: rgba(24, 27, 37, 0.72);
+      -webkit-backdrop-filter: blur(14px) saturate(160%); backdrop-filter: blur(14px) saturate(160%);
+    }
+    .sheet { animation: none !important; }
+    .grain { display: none; }
+    .glass::after { display: none; }
+    .plan, .pill-btn, .chip-btn, .copy, .legend .chip, .id-btn, .topnav a, .segmented button, .wordmark { will-change: auto; }
+    .backdrop i { filter: blur(60px); }
   }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
@@ -819,7 +851,7 @@ data: [DONE]</pre>
         <input class="search" id="model-search" type="search" placeholder="Найти: claude, kling, gemini…" autocomplete="off">
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="models">
           <thead><tr><th>ID</th><th>Модель</th><th>Разработчик</th><th>reasoning_effort</th></tr></thead>
           <tbody id="models-body"></tbody>
         </table>
@@ -936,9 +968,14 @@ data: [DONE]</pre>
           <thead><tr><th>HTTP</th><th>code</th><th>Что произошло и что делать</th></tr></thead>
           <tbody>
             <tr><td class="num">400</td><td><code>invalid_request</code></td><td>Неверные параметры запроса. Проверьте имена и значения полей.</td></tr>
+            <tr><td class="num">400</td><td><code>https_required</code></td><td>Запрос пришёл по <code>http://</code>. Укажите адрес с <code>https://</code> и перевыпустите ключ в боте: по http он передавался открытым текстом.</td></tr>
             <tr><td class="num">401</td><td><code>invalid_api_key</code></td><td>Ключ не передан или недействителен. Проверьте заголовок и ключ в <code>/profile</code>.</td></tr>
             <tr><td class="num">402</td><td><code>subscription_required</code></td><td>Нет активного тарифа. Продлите подписку в боте.</td></tr>
             <tr><td class="num">404</td><td><code>model_not_found</code></td><td>Модели с таким ID нет. Сверьтесь с разделом <a href="#models">Модели</a>.</td></tr>
+            <tr><td class="num">404</td><td><code>not_found</code></td><td>Такого эндпоинта нет. Проверьте путь: он начинается с <code>/v1/</code>, например <code>/v1/chat/completions</code>.</td></tr>
+            <tr><td class="num">413</td><td><code>request_too_large</code></td><td>Тело запроса больше 25 МБ. Уменьшите или сожмите вложенные изображения.</td></tr>
+            <tr><td class="num">429</td><td><code>rate_limited</code></td><td>Больше 100 запросов в секунду с одного адреса. Повторите через секунду.</td></tr>
+            <tr><td class="num">429</td><td><code>too_many_concurrent_requests</code></td><td>Больше 20 одновременных запросов на один ключ. Дождитесь ответов на текущие и повторите.</td></tr>
             <tr><td class="num">429</td><td><code>plan_limit_reached</code></td><td>Дневной лимит тарифа исчерпан. Доступ вернётся после сброса, время сброса есть в заголовке <code>X-Plan-Reset</code>.</td></tr>
             <tr><td class="num">500</td><td><code>server_error</code></td><td>Внутренняя ошибка. Повторите запрос через несколько секунд.</td></tr>
             <tr><td class="num">502</td><td><code>upstream_error</code></td><td>Сервис моделей временно не отвечает. Повторите запрос.</td></tr>
@@ -952,11 +989,11 @@ data: [DONE]</pre>
     <section class="sheet glass" id="limits">
       <span class="kicker">Тарифы</span>
       <h2>Лимиты и тарифы</h2>
-      <p class="prose">Отдельного ограничения на число запросов в минуту нет. Объём работы зависит только от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
+      <p class="prose">С одного адреса принимается до 100 запросов в секунду (сверх — <code>429 rate_limited</code>), одновременно на один ключ обрабатывается до 20 запросов (сверх — <code>429 too_many_concurrent_requests</code>). Лишние запросы можно сразу повторить. Ограничений по числу запросов в минуту или в день нет. Объём работы зависит от тарифа: сколько часов в сутки действует безлимит на текст и видео.</p>
       <div class="plans">
         <div class="plan glass tilt featured">
           <h3><span class="plan-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.6 2.2 5 13.1c-.3.4 0 1 .5 1h5.3l-1.5 7.4c-.1.6.6.9 1 .4l8.6-10.9c.3-.4 0-1-.5-1h-5.3l1.5-7.4c.1-.6-.6-.9-1-.4Z"/></svg></span>Pro <span class="badge">Популярный</span></h3>
-          <div class="price">$33 <small>/ 30 дней</small></div>
+          <div class="price">$50 <small>/ 30 дней</small></div>
           <ul>
           <li>Безлимит на генерацию изображений</li>
           <li>Безлимит на текстовые модели 15 часов в день</li>
@@ -967,7 +1004,7 @@ data: [DONE]</pre>
         </div>
         <div class="plan glass tilt gold">
           <h3><span class="plan-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.2 8.3c-.2-.7.6-1.2 1.2-.8l3.9 2.9 2.9-5c.4-.6 1.2-.6 1.6 0l2.9 5 3.9-2.9c.6-.4 1.4.1 1.2.8l-1.9 8.6c-.1.4-.5.7-.9.7H6c-.4 0-.8-.3-.9-.7L3.2 8.3Z"/><rect x="5.5" y="19" width="13" height="2.2" rx="1.1"/></svg></span>Unlimited</h3>
-          <div class="price">$80 <small>/ 30 дней</small></div>
+          <div class="price">$100 <small>/ 30 дней</small></div>
           <ul>
           <li>Полный безлимит на все модели</li>
           <li>Текст, изображения и видео круглосуточно</li>
@@ -1115,7 +1152,13 @@ data: [DONE]</pre>
           Object.keys(links).forEach(function (id) { links[id].classList.toggle("active", id === entry.target.id); });
           var active = links[entry.target.id];
           if (active && window.matchMedia("(max-width: 960px)").matches) {
-            active.scrollIntoView({ block: "nearest", inline: "center", behavior: reduce.matches ? "auto" : "smooth" });
+            // Scroll only the horizontal index bar. scrollIntoView could also move the page
+            // and, on iPhones, cut off the finger's momentum scroll mid-flight
+            var toc = active.closest(".toc");
+            toc.scrollTo({
+              left: active.offsetLeft - (toc.clientWidth - active.offsetWidth) / 2,
+              behavior: reduce.matches ? "auto" : "smooth",
+            });
           }
         });
       }, { rootMargin: "-25% 0px -65% 0px" });
@@ -1209,8 +1252,10 @@ data: [DONE]</pre>
         return;
       }
       body.innerHTML = rows.map(function (m) {
+        // .m-name — название под ID: на телефоне колонки «Модель» и «Разработчик» скрыты,
+        // иначе таблица уезжала вбок и названия выглядели обрезанными
         return '<tr><td><span class="type-dot" style="background:var(' + TYPE_VAR[m[2]] + ')"></span><button class="id-btn" type="button" title="Скопировать ID" data-id="' + m[0] + '">' + m[0] +
-          "</button></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
+          '</button><span class="m-name">' + m[1] + " · " + m[3] + "</span></td><td>" + m[1] + "</td><td>" + m[3] + "</td><td>" + levels(m) + "</td></tr>";
       }).join("");
     }
     body.addEventListener("click", function (e) {
@@ -1371,15 +1416,33 @@ data: [DONE]</pre>
       }
       if (reduce.matches) draw();
     });
-    canvas.addEventListener("pointerleave", function () { hovered = null; tip.hidden = true; drag = null; });
+    canvas.addEventListener("pointerleave", function (e) {
+      drag = null;
+      // палец «уходит» сразу после касания: подсказку после тапа прячет таймер, а не это событие
+      if (e.pointerType !== "mouse") return;
+      hovered = null;
+      tip.hidden = true;
+    });
     canvas.addEventListener("pointercancel", function () { drag = null; });
     canvas.addEventListener("pointerdown", function (e) { drag = { x: e.clientX, y: e.clientY, moved: false }; canvas.setPointerCapture(e.pointerId); });
+    var tipTimer;
     canvas.addEventListener("pointerup", function (e) {
       var wasDrag = drag && drag.moved;
       drag = null;
       if (wasDrag) return;
       var p = pick(e);
-      if (p) copyText(p.m[0], null);
+      if (!p) return;
+      copyText(p.m[0], null);
+      if (e.pointerType !== "mouse") {
+        // на телефоне нет наведения: без подсказки клиент не видел, какую модель скопировал
+        hovered = p;
+        tip.hidden = false;
+        tip.innerHTML = "<b>" + p.m[1] + "</b><code>" + p.m[0] + "</code>";
+        tip.style.left = p.sx + "px";
+        tip.style.top = p.sy + "px";
+        clearTimeout(tipTimer);
+        tipTimer = setTimeout(function () { hovered = null; tip.hidden = true; }, 2200);
+      }
     });
 
     readColors();
@@ -1616,7 +1679,15 @@ data: [DONE]</pre>
     });
   }
 
-  try { init(); } catch (e) { console.warn("3D background disabled:", e); canvas.remove(); }
+  // Phones get the CSS glow only: the glass scene (a transmission pass every frame) under
+  // blurred cards overloaded mobile GPUs — stutter, flicker and lost WebGL contexts
+  if (lite) {
+    canvas.remove();
+  } else {
+    // a lost context (GPU reset, driver crash) left a frozen or black canvas over the glow
+    canvas.addEventListener("webglcontextlost", () => canvas.remove());
+    try { init(); } catch (e) { console.warn("3D background disabled:", e); canvas.remove(); }
+  }
 </script>
 
 </body>

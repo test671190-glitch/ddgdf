@@ -4,6 +4,7 @@ import logging
 from html import escape
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
@@ -23,8 +24,8 @@ from bot.keyboards.inline import (
     CryptoPay,
     Menu,
     TariffPage,
+    crypto_expired_keyboard,
     crypto_pay_keyboard,
-    renew_keyboard,
     tariff_keyboard,
     tariffs_keyboard,
 )
@@ -40,10 +41,12 @@ PAYLOAD_PREFIX = "tariff:"
 CURRENCY = "XTR"  # Telegram Stars
 
 
-def tariff_from_payload(payload: str) -> Tariff | None:
+def tariff_from_payload(
+    payload: str, catalog: dict[str, Tariff] = TARIFFS_ON_SALE
+) -> Tariff | None:
     if not payload.startswith(PAYLOAD_PREFIX):
         return None
-    return TARIFFS_ON_SALE.get(payload.removeprefix(PAYLOAD_PREFIX))
+    return catalog.get(payload.removeprefix(PAYLOAD_PREFIX))
 
 
 @router.message(Command("tariffs"))
@@ -90,16 +93,33 @@ async def cb_buy(
 ) -> None:
     tariff = TARIFFS_ON_SALE[callback_data.code]
     stars = tariff.stars(settings.stars_per_usd)
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=f"{SHOP_NAME}: {tariff.title}",
-        description=texts.invoice_description(tariff, settings),
-        payload=PAYLOAD_PREFIX + tariff.code,
-        currency=CURRENCY,
-        prices=[
-            LabeledPrice(label=f"{tariff.title}, {settings.subscription_days} дней", amount=stars)
-        ],
-    )
+    try:
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"{SHOP_NAME}: {tariff.title}",
+            description=texts.invoice_description(tariff, settings),
+            payload=PAYLOAD_PREFIX + tariff.code,
+            # С ним у пересланной копии счёта вместо кнопки оплаты — ссылка на бота. Без него
+            # копию можно оплатить в любом чате, а сообщения об оплате вне лички бот не
+            # обрабатывает (работает только в личке): Stars списаны, подписки нет
+            start_parameter=f"buy_{tariff.code}",
+            currency=CURRENCY,
+            prices=[
+                LabeledPrice(
+                    label=f"{tariff.title}, {texts.days(settings.subscription_days)}",
+                    amount=stars,
+                )
+            ],
+        )
+    except TelegramAPIError as e:
+        # без ответа на нажатие кнопка крутилась бы, а клиент не понимал, что случилось
+        logger.error("Не удалось выставить счёт Stars: %s", e)
+        await safe_answer(
+            callback,
+            "Не получилось выставить счёт. Попробуйте ещё раз или оплатите криптой.",
+            show_alert=True,
+        )
+        return
     await safe_answer(callback)
 
 
@@ -131,6 +151,7 @@ async def cb_crypto_check(
     callback: CallbackQuery,
     callback_data: CryptoCheck,
     db: Database,
+    settings: Settings,
     crypto: CryptoPayments | None,
 ) -> None:
     order = await db.get_crypto_order(callback_data.order_id)
@@ -143,10 +164,15 @@ async def cb_crypto_check(
         await safe_answer(callback, "Crypto Pay не отвечает, попробуйте позже", show_alert=True)
         return
     if status == "approved":
-        await safe_answer(callback, "Оплата получена, ключ уже в чате")
+        # Показываем профиль с ключом прямо здесь: сообщение с ключом могло не дойти
+        # (сбой Telegram в момент оплаты), а «ключ уже в чате» тогда неправда.
+        # Импорт внутри: sections сам импортирует этот модуль
+        from bot.handlers.sections import render_profile
+
+        text, markup = await render_profile(callback.from_user.id, db, settings)
+        await show(callback, f"<b>Заказ #{order.id} оплачен.</b>\n\n" + text, markup)
     elif status == "expired":
-        tariff = TARIFFS[order.tariff]
-        await show(callback, texts.crypto_expired(order), renew_keyboard(tariff.code))
+        await show(callback, texts.crypto_expired(order), crypto_expired_keyboard(order.tariff))
     else:
         await safe_answer(
             callback, "Оплата пока не поступила. Бот проверяет её автоматически.", show_alert=True
@@ -175,7 +201,8 @@ async def on_successful_payment(
 ) -> None:
     payment = message.successful_payment
     user = message.from_user
-    tariff = tariff_from_payload(payment.invoice_payload)
+    # Деньги уже списаны: тариф могли снять с продажи после pre_checkout — начисляем всё равно
+    tariff = tariff_from_payload(payment.invoice_payload, TARIFFS)
     if tariff is None:
         logger.error("Неизвестный payload платежа: %s", payment.invoice_payload)
         await notify_admins(
@@ -186,17 +213,59 @@ async def on_successful_payment(
             f"charge_id <code>{escape(payment.telegram_payment_charge_id)}</code>",
         )
         await message.answer(
-            "Оплата получена, но тариф не распознан. Мы уже разбираемся — напишите в /paysupport."
+            "Оплата получена, но тариф не распознан. Мы уже разбираемся — напишите в /support."
+        )
+        return
+    expected = tariff.stars(settings.stars_per_usd)
+    if payment.currency != CURRENCY or payment.total_amount != expected:
+        # pre_checkout такие оплаты отклоняет; сюда попадёт разве что оплата, на которую
+        # цена сменилась уже после проверки. Подписку за другую сумму сами не выдаём
+        logger.error(
+            "Сумма платежа %s не совпала с ценой: %s %s вместо %s XTR",
+            payment.telegram_payment_charge_id,
+            payment.currency,
+            payment.total_amount,
+            expected,
+        )
+        await notify_admins(
+            bot,
+            settings,
+            f"❗️ Оплата от <code>{user.id}</code> не совпала с ценой тарифа "
+            f"<b>{tariff.title}</b>: {escape(payment.currency)} {payment.total_amount} "
+            f"вместо ⭐ {expected}, charge_id "
+            f"<code>{escape(payment.telegram_payment_charge_id)}</code>. Подписка не начислена.\n"
+            f"Начислить вручную: <code>/grant {user.id} {tariff.code}</code>",
+        )
+        await message.answer(
+            "Оплата получена, но сумма не совпала с ценой тарифа. Мы уже разбираемся — "
+            "напишите в /support."
         )
         return
 
-    act = await db.activate_paid(
-        user.id,
-        tariff.code,
-        settings.subscription_days,
-        payment.total_amount,
-        payment.telegram_payment_charge_id,
-    )
+    try:
+        act = await db.activate_paid(
+            user.id,
+            tariff.code,
+            settings.subscription_days,
+            payment.total_amount,
+            payment.telegram_payment_charge_id,
+        )
+    except Exception:
+        # Telegram второй раз этот апдейт не пришлёт: без уведомления оплата потеряется
+        logger.exception("Не удалось записать платёж %s", payment.telegram_payment_charge_id)
+        await notify_admins(
+            bot,
+            settings,
+            f"❗️ Оплата от <code>{user.id}</code> не записана из-за ошибки базы: "
+            f"тариф <b>{tariff.title}</b>, ⭐ {payment.total_amount}, "
+            f"charge_id <code>{escape(payment.telegram_payment_charge_id)}</code>.\n"
+            f"Начислите вручную: <code>/grant {user.id} {tariff.code}</code>",
+        )
+        await message.answer(
+            "Оплата получена, но доступ не выдался из-за сбоя. Мы уже знаем и начислим его "
+            "вручную, напишите в /support, если что-то не так."
+        )
+        return
     if act is None:
         logger.warning("Повторный платёж %s", payment.telegram_payment_charge_id)
         return

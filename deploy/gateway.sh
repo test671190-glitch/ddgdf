@@ -19,19 +19,59 @@ if ! command -v caddy >/dev/null; then
   apt-get install -y caddy
 fi
 
-cat > /etc/caddy/Caddyfile <<EOF
+cat > /etc/caddy/Caddyfile.new <<EOF
+{
+	# Админка Caddy — через сокет в каталоге caddy, а не на 127.0.0.1:2019: к TCP-порту
+	# мог подключиться любой процесс сервера, в том числе бот, и переписать конфиг
+	admin unix//var/lib/caddy/admin.sock
+	servers {
+		# Только HTTP/1.1 и HTTP/2: HTTP/3 (UDP 443) клиентам API не нужен — минус открытый порт
+		protocols h1 h2
+		timeouts {
+			# заголовки запроса — не дольше 10 с: «медленные» соединения не держат сервер
+			read_header 10s
+			# весь запрос с телом (до 25 МБ) — не дольше 5 минут. Потоковые ответы моделей
+			# это не обрывает: проверено, ответ дольше read_body доходит целиком
+			read_body 5m
+			# простаивающее keep-alive соединение закрывается через 2 минуты
+			idle 2m
+		}
+	}
+}
+
 $HOST {
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+	}
+	# как MAX_BODY в bot/gateway.py: больше эндпоинт всё равно не примет
+	request_body {
+		max_size 25MB
+	}
 	reverse_proxy 127.0.0.1:8081 {
 		# ответы моделей идут потоком — отдаём клиенту сразу, без буфера
 		flush_interval -1
 	}
 }
 
-# голый IP: перенаправляем на HTTPS-адрес (308 сохраняет POST)
-http://$IP {
-	redir https://$HOST{uri} 308
+# HTTP. Запросы к API не перенаправляем: ключ к этому моменту уже ушёл открытым текстом,
+# а Anthropic SDK после редиректа слал бы его так на каждом запросе. Остальное — на HTTPS
+http://$HOST, http://$IP {
+	header -Server
+	handle /v1* {
+		header Content-Type "application/json; charset=utf-8"
+		respond \`{"error": {"message": "Используйте https://$HOST/v1: по http ключ передаётся открытым текстом. Перевыпустите ключ в боте: Профиль → Перевыпустить ключ", "type": "invalid_request_error", "code": "https_required"}}\` 400
+	}
+	handle {
+		redir https://$HOST{uri} 308
+	}
 }
 EOF
+# Проверяем новый конфиг до замены: с ошибкой в нём Caddy не поднялся бы после перезагрузки
+caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile
+mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow 80/tcp
@@ -39,7 +79,10 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
 fi
 
 systemctl enable caddy
-systemctl restart caddy
+# reload не обрывает идущие потоки ответов. Но caddy reload стучится в админку по адресу
+# из нового конфига: пока работающий Caddy слушает прежний адрес (первая установка, переезд
+# админки на сокет) или Caddy не запущен, reload не пройдёт — тогда перезапуск
+systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
 echo "==> Настройки бота"
 cd "$APP_DIR"

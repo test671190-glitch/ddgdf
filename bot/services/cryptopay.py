@@ -42,6 +42,8 @@ class CryptoPayClient:
             raise CryptoPayError(f"{method}: нет связи с Crypto Pay ({e})") from e
         except ValueError as e:  # ответ не JSON, например HTML-страница 502
             raise CryptoPayError(f"{method}: Crypto Pay вернул не JSON ({e})") from e
+        if not isinstance(data, dict):  # например, null или список от прокси
+            raise CryptoPayError(f"{method}: неожиданный ответ Crypto Pay ({data!r:.200})")
         if not data.get("ok"):
             raise CryptoPayError(f"{method}: {data.get('error')}")
         return data["result"]
@@ -66,7 +68,14 @@ class CryptoPayClient:
             expires_in=expires_in,
             allow_comments=False,
         )
-        return _invoice(result)
+        try:
+            invoice = _invoice(result)
+        except (KeyError, TypeError, ValueError) as e:
+            raise CryptoPayError(f"createInvoice: неожиданный ответ ({result!r:.200})") from e
+        if not invoice.pay_url:
+            # без ссылки кнопку «Оплатить» не построить — считаем это ошибкой сервиса
+            raise CryptoPayError(f"createInvoice: в ответе нет ссылки на оплату ({result})")
+        return invoice
 
     async def get_invoices(self, invoice_ids: list[int]) -> list[Invoice]:
         if not invoice_ids:
@@ -75,7 +84,14 @@ class CryptoPayClient:
             "getInvoices", invoice_ids=",".join(map(str, invoice_ids)), count=1000
         )
         items = result.get("items", []) if isinstance(result, dict) else result
-        return [_invoice(item) for item in items]
+        invoices = []
+        for item in items:
+            # один битый счёт в ответе не должен останавливать проверку всех остальных оплат
+            try:
+                invoices.append(_invoice(item))
+            except (KeyError, TypeError, ValueError):
+                logger.error("getInvoices: не разобрал счёт %r", item)
+        return invoices
 
 
 def _invoice(data: dict) -> Invoice:

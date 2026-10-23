@@ -31,15 +31,23 @@ python3 -m venv .venv
 
 mkdir -p data
 
+# При повторном запуске бот уже работает: пока ниже меняются права на data/, он не смог бы
+# записать оплату в базу. Останавливаем только здесь — если pip выше упадёт, бот продолжит
+# работать. В конце скрипт запустит его снова
+systemctl stop unknownshop 2>/dev/null || true
+
 echo "==> Права: код принадлежит root, бот пишет только в data/, .env читают root и бот"
-chown -R root:root "$APP_DIR"
-chmod -R u=rwX,go=rX "$APP_DIR"
-chown -R "$APP_USER:$APP_USER" "$APP_DIR/data"
-chmod 750 "$APP_DIR/data"
+# Сначала закрываем секреты, потом раздаём права на код: при общем chmod -R .env и база
+# на время между командами становились доступны на чтение любому пользователю сервера
 if [ -f .env ]; then
   chown "root:$APP_USER" .env
   chmod 640 .env
 fi
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/data"
+chmod 750 "$APP_DIR/data"
+# ссылки (.venv/bin/python → системный python) пропускаем: chown и chmod поменяли бы цель
+find "$APP_DIR" -path "$APP_DIR/data" -prune -o ! -name .env ! -type l -exec chown root:root {} +
+find "$APP_DIR" -path "$APP_DIR/data" -prune -o ! -name .env ! -type l -exec chmod u=rwX,go=rX {} +
 
 echo "==> Автозапуск (systemd)"
 cat > /etc/systemd/system/unknownshop.service <<EOF

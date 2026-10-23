@@ -186,8 +186,10 @@
   @keyframes rise { from { transform: translateY(46px) scale(0.975); opacity: 0.3; } }
 
   .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 6px 0 16px; padding: 0; list-style: none; counter-reset: s; }
-  .steps li { counter-increment: s; margin: 0; padding: 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 10px 26px -18px rgba(0, 0, 0, 0.45); display: grid; gap: 8px; align-content: start; }
-  .steps li::before { content: counter(s); font: 800 22px/1 var(--font-display); color: var(--signal); }
+  /* block, not grid: in a grid every text run and <code> inside the step became its own row,
+     so "по команде /profile." broke into three lines */
+  .steps li { counter-increment: s; margin: 0; padding: 18px; border-radius: 18px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge), 0 10px 26px -18px rgba(0, 0, 0, 0.45); display: block; }
+  .steps li::before { content: counter(s); display: block; margin-bottom: 8px; font: 800 22px/1 var(--font-display); color: var(--signal); }
 
   .endpoint { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 16px; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--glass-edge); font: 500 15px/1.3 var(--font-mono); }
   .method { font: 700 11.5px/1 var(--font-mono); letter-spacing: 0.06em; padding: 7px 10px; border-radius: 999px; }
@@ -287,8 +289,10 @@
   footer { padding-block: 0 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
   footer .inner { max-width: 1200px; margin: 0 auto; padding: 18px 24px; border-radius: 999px; color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 
-  .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translate(-50%, 140%); padding: 12px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1); }
-  .toast.show { transform: translate(-50%, 0); }
+  /* hidden: moved below the screen by its own height plus the bottom offset (140% of its height
+     left a dark sliver peeking at the bottom edge on phones) and made invisible */
+  .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translate(-50%, calc(100% + 24px + env(safe-area-inset-bottom, 0px))); visibility: hidden; padding: 12px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1), visibility 0s linear 0.45s; }
+  .toast.show { transform: translate(-50%, 0); visibility: visible; transition: transform 0.45s cubic-bezier(.3, 1.4, .5, 1); }
 
   /* Springy hover: controls swell under the pointer and press in on click, like iOS glass buttons. */
   .pill-btn, .chip-btn, .copy, .legend .chip, .id-btn, .topnav a, .segmented button, .wordmark {
@@ -344,9 +348,37 @@
     .topbar .bar { padding-right: 6px; }
     .wordmark { font-size: 15px; }
     .topnav a { padding: 8px 12px; font-size: 13px; }
+    .hero { padding-block: 36px 28px; }
+    /* the hero grid aligns items to the start, so the row of stats shrank to its content
+       and the tiles never stretched; the long label then overflowed its tile */
+    .stats { justify-self: stretch; }
     .stat { min-width: 0; flex: 1 1 90px; padding: 14px; }
+    .stat span { letter-spacing: 0.04em; overflow-wrap: anywhere; }
     #orbit { height: 300px; }
-    .glass { -webkit-backdrop-filter: blur(18px) saturate(170%); backdrop-filter: blur(18px) saturate(170%); }
+    table.models th:nth-child(2), table.models th:nth-child(3),
+    table.models td:nth-child(2), table.models td:nth-child(3) { display: none; }
+    table.models .m-name { display: block; margin: 4px 0 0 16px; font-size: 13px; color: var(--muted); }
+    table.models th, table.models td { padding: 10px 12px; }
+  }
+  .m-name { display: none; }
+
+  /* Phones. A blur under every card over a constantly re-rendered WebGL scene made the GPU
+     re-blur the whole page each frame while scrolling: animations stuttered, cards flickered
+     and the page jumped. On phones: no WebGL scene (scene.html skips it), the blur only on the
+     two small sticky bars, no scroll-driven card animation, no blended grain layer. */
+  @media (max-width: 760px), (pointer: coarse) {
+    .glass, .code { -webkit-backdrop-filter: none; backdrop-filter: none; }
+    .glass { background: rgba(24, 27, 37, 0.86); }
+    .code { background: rgba(5, 6, 9, 0.9); }
+    .topbar .bar, nav.toc {
+      background: rgba(24, 27, 37, 0.72);
+      -webkit-backdrop-filter: blur(14px) saturate(160%); backdrop-filter: blur(14px) saturate(160%);
+    }
+    .sheet { animation: none !important; }
+    .grain { display: none; }
+    .glass::after { display: none; }
+    .plan, .pill-btn, .chip-btn, .copy, .legend .chip, .id-btn, .topnav a, .segmented button, .wordmark { will-change: auto; }
+    .backdrop i { filter: blur(60px); }
   }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }

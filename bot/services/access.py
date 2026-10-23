@@ -38,15 +38,24 @@ async def shown_key(
 
 async def deliver_activation(
     bot: Bot, db: Database, settings: Settings, user_id: int, act: Activation, *, paid: bool
-) -> None:
+) -> bool:
+    """Сообщает клиенту о доступе. False — сообщение не доставлено (бот заблокирован и т. п.)."""
     tariff = TARIFFS[act.tariff]
     key = await shown_key(db, settings, user_id, act.key)
-    await safe_send(
+    previous = None
+    if act.key is None:
+        # смена тарифа при пустом пуле: ключ прежнего тарифа продолжает работать
+        current = await db.get_active_key(user_id)
+        previous = await shown_key(db, settings, user_id, current.key if current else None)
+    visible = key or previous
+    delivered = await safe_send(
         bot,
         user_id,
-        texts.activation(tariff, act, settings, paid=paid, key=key),
+        texts.activation(tariff, act, settings, paid=paid, key=key, previous_key=previous),
         reply_markup=profile_keyboard(
-            has_subscription=True, key=key, can_rotate=settings.uses_gateway and key is not None
+            has_subscription=True,
+            key=visible,
+            can_rotate=settings.uses_gateway and visible is not None,
         ),
     )
     if act.key is None:
@@ -54,9 +63,33 @@ async def deliver_activation(
             bot,
             settings,
             f"⚠️ Нет свободных ключей для тарифа <b>{tariff.title}</b>.\n"
-            f"Пользователь <code>{user_id}</code> ждёт ключ. Выдайте вручную:\n"
-            f"<code>/givekey {user_id} KEY</code>\n"
-            f"И пополните пул: <code>/addkeys {tariff.code}</code> + ключи с новой строки.",
+            f"Пользователь <code>{user_id}</code> ждёт ключ. Пополните пул:\n"
+            f"<code>/addkeys {tariff.code}</code> + ключи с новой строки — ключ выдастся "
+            f"автоматически, <code>/givekey</code> после этого не нужен.",
         )
     if act.revoked_key:
         await notify_admins(bot, settings, revoke_notice(user_id, act.revoked_key, "смена тарифа"))
+    return delivered
+
+
+async def deliver_waiting(bot: Bot, db: Database, settings: Settings, tariff: str) -> int:
+    """Отдаёт свободные ключи тарифа тем, кто оплатил его при пустом пуле, и шлёт им ключ.
+
+    Ключи освобождаются при пополнении пула, окончании подписок и смене тарифа.
+    Возвращает, скольким клиентам выдан ключ.
+    """
+    waiting = await db.assign_waiting(tariff)
+    title = TARIFFS[tariff].title if tariff in TARIFFS else tariff
+    for user_id, upstream_key, revoked in waiting:
+        visible = await shown_key(db, settings, user_id, upstream_key)
+        await safe_send(
+            bot,
+            user_id,
+            texts.key_issued(title, visible, settings),
+            reply_markup=profile_keyboard(
+                has_subscription=True, key=visible, can_rotate=settings.uses_gateway
+            ),
+        )
+        if revoked:
+            await notify_admins(bot, settings, revoke_notice(user_id, revoked, "смена тарифа"))
+    return len(waiting)

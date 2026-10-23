@@ -54,7 +54,13 @@ def all_texts(settings: Settings) -> list[str]:
         texts.api_info(settings),
         texts.faq_overview(),
         texts.support(settings),
-        texts.paysupport(settings),
+        texts.support(settings, payment=True),
+        texts.support_prompt(),
+        texts.support_ticket(1, "&lt;Имя&gt;", sub),
+        texts.support_ticket(1, "Имя", None),
+        texts.support_answer("ответ <b>не</b> разметка & ко"),
+        texts.support_answer(None),
+        texts.site(settings),
         texts.terms(settings),
         texts.reminder(sub),
         texts.expired(sub),
@@ -75,7 +81,73 @@ def test_all_texts_are_valid_telegram_html(settings):
         check(html)
 
 
+@pytest.mark.parametrize(
+    ("left", "days"),
+    [
+        (timedelta(days=30) - timedelta(seconds=1), 30),  # только что купил — 30, а не 29
+        (timedelta(hours=23), 1),  # подписка ещё работает — не «0 дн.»
+        (timedelta(days=2), 2),
+        (-timedelta(hours=1), 0),
+    ],
+)
+def test_days_left_rounds_up(left, days):
+    sub = Subscription(1, "pro", utcnow() + left)
+    assert texts.days_left(sub) == days
+
+
+def test_support_username_from_link():
+    """Ссылку целиком превращали в https://t.me/https://t.me/help_bot."""
+    for value in ("https://t.me/help_bot", "t.me/help_bot/", "@help_bot", " help_bot "):
+        settings = Settings(_env_file=None, bot_token="1:x", support_username=value)
+        assert settings.support_username == "help_bot"
+
+
+def test_blank_public_api_url_keeps_gateway_off():
+    settings = Settings(_env_file=None, bot_token="1:x", public_api_url="   ")
+    assert not settings.uses_gateway
+
+
 def test_progress_bar():
     assert texts.progress_bar(15, 30) == "▰▰▰▰▰▱▱▱▱▱"
     assert texts.progress_bar(40, 30) == "▰" * 10
     assert texts.progress_bar(0, 30) == "▱" * 10
+
+
+def test_plural_days():
+    assert [texts.days(n) for n in (1, 2, 5, 11, 21, 22, 30, 31, 112)] == [
+        "1 день",
+        "2 дня",
+        "5 дней",
+        "11 дней",
+        "21 день",
+        "22 дня",
+        "30 дней",
+        "31 день",
+        "112 дней",
+    ]
+
+
+def test_notification_heads_are_kept_in_chat(settings):
+    """Кнопки под этими сообщениями не должны их стирать (utils.KEEP_IN_CHAT)."""
+    import re
+
+    from bot.utils import KEEP_IN_CHAT
+
+    sub = Subscription(1, "pro", utcnow() + timedelta(days=12))
+    act = Activation("pro", sub.expires_at, "k", None, False)
+    plain = [
+        re.sub(r"<[^>]+>", "", t)
+        for t in (
+            texts.activation(TARIFFS["pro"], act, settings, paid=True, key="k"),
+            texts.activation(TARIFFS["pro"], act, settings, paid=False, key="k"),
+            texts.key_issued("Pro", "k", settings),
+            texts.support_answer("ok"),
+        )
+    ]
+    assert all(t.startswith(KEEP_IN_CHAT) for t in plain)
+
+
+def test_legacy_tariff_reminder_does_not_say_renew():
+    sub = Subscription(1, "start", utcnow() + timedelta(days=2))
+    assert "Продлите заранее" not in texts.reminder(sub)
+    assert "больше не продаётся" in texts.reminder(sub)

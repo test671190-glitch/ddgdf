@@ -1,0 +1,856 @@
+"""Апдейты через настоящий Dispatcher (собран build_dispatcher из __main__.py: те же
+middleware и роутеры) и фейковую сессию Bot API без сети."""
+
+import itertools
+from datetime import datetime
+from types import SimpleNamespace
+
+import pytest
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.base import BaseSession
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    Message,
+    MessageAutoDeleteTimerChanged,
+    MessageEntity,
+    MessageId,
+    PhotoSize,
+    SuccessfulPayment,
+    Update,
+    User,
+)
+
+import bot.ratelimit as ratelimit
+from bot.__main__ import build_dispatcher
+from bot.catalog import TARIFFS
+from bot.config import Settings
+from bot.db import Database, utcnow
+from bot.keyboards.inline import (
+    BuyTariff,
+    CryptoCheck,
+    Menu,
+    RotateKey,
+    SupportAnswer,
+    SupportWrite,
+)
+from bot.middlewares.throttle import BURST, ThrottleMiddleware
+from bot.services.crypto import CryptoPayments
+
+BOT_USER = User(id=4242, is_bot=True, first_name="shop", username="shopbot")
+GATEWAY = {"public_api_url": "https://x.sslip.io/v1"}
+_ids = itertools.count(1)
+
+
+class FakeSession(BaseSession):
+    """Bot API без сети: запоминает вызовы, hooks могут бросить ошибку Telegram."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list = []
+        self.hooks: list = []
+
+    async def make_request(self, bot, method, timeout=None):
+        for hook in self.hooks:
+            hook(method)
+        self.calls.append(method)
+        name = type(method).__name__
+        if name in ("AnswerCallbackQuery", "DeleteMessage"):
+            return True
+        if name == "CopyMessage":
+            return MessageId(message_id=next(_ids))
+        if name == "SendInvoice":
+            return Message(
+                message_id=next(_ids),
+                date=datetime.now(),
+                chat=Chat(id=method.chat_id, type="private"),
+                from_user=BOT_USER,
+            )
+        if name in ("SendMessage", "EditMessageText"):
+            return Message(
+                message_id=next(_ids),
+                date=datetime.now(),
+                chat=Chat(id=getattr(method, "chat_id", None) or 42, type="private"),
+                from_user=BOT_USER,
+                text=method.text,
+            )
+        raise NotImplementedError(name)
+
+    async def close(self) -> None:
+        pass
+
+    async def stream_content(self, *args, **kwargs):  # pragma: no cover
+        raise NotImplementedError
+        yield b""
+
+    def named(self, name: str) -> list:
+        return [c for c in self.calls if type(c).__name__ == name]
+
+
+_dispatcher: Dispatcher | None = None
+
+
+def dispatcher() -> Dispatcher:
+    # роутеры модульные: подключить их можно только к одному Dispatcher
+    global _dispatcher
+    if _dispatcher is None:
+        _dispatcher = build_dispatcher()
+    return _dispatcher
+
+
+def settings(**kwargs) -> Settings:
+    return Settings(_env_file=None, bot_token="1:x", admin_ids=[1000], **kwargs)
+
+
+def user(uid: int = 42) -> User:
+    return User(id=uid, is_bot=False, first_name="Neo")
+
+
+def message_update(text=None, uid=42, chat_type="private", **extra) -> Update:
+    message = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=uid if chat_type == "private" else -100, type=chat_type),
+        from_user=user(uid),
+        text=text,
+        **extra,
+    )
+    return Update(update_id=next(_ids), message=message)
+
+
+def callback_update(data: str, uid: int = 42) -> Update:
+    message = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=uid, type="private"),
+        from_user=BOT_USER,
+        text="old text",
+    )
+    query = CallbackQuery(
+        id=str(next(_ids)), from_user=user(uid), chat_instance="ci", data=data, message=message
+    )
+    return Update(update_id=next(_ids), callback_query=query)
+
+
+@pytest.fixture
+def tg():
+    # Dispatcher общий на все тесты: состояние «пишет в поддержку» не должно переходить
+    # из теста в тест
+    dp = dispatcher()
+    dp.fsm.storage = MemoryStorage()
+    # и счётчик частоты тоже: пользователь 42 есть почти в каждом тесте
+    for observer in (dp.message, dp.callback_query):
+        for middleware in observer.outer_middleware:
+            if isinstance(middleware, ThrottleMiddleware):
+                middleware.__init__(middleware.limiter.rate, middleware.limiter.burst)
+    session = FakeSession()
+    bot = Bot(
+        token="4242:TEST",
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
+    )
+    return bot, session
+
+
+@pytest.fixture
+async def db():
+    database = Database(":memory:")
+    await database.connect()
+    yield database
+    await database.close()
+
+
+async def feed(bot, update, db, st=None, crypto=None):
+    return await dispatcher().feed_update(
+        bot, update, db=db, settings=st or settings(), crypto=crypto
+    )
+
+
+async def test_payment_survives_failed_user_upsert(tg, db):
+    """Запись в users падала раньше обработчика — и вместе с ней выбрасывался апдейт
+    с оплатой: Stars списаны, а ни админ, ни клиент ничего не узнавали."""
+    bot, session = tg
+    await db.close()  # любая запись в базу теперь падает
+    payment = SuccessfulPayment(
+        currency="XTR",
+        total_amount=2541,
+        invoice_payload="tariff:pro",
+        telegram_payment_charge_id="ch-77",
+        provider_payment_charge_id="",
+    )
+    await feed(bot, message_update(uid=7, successful_payment=payment), db)
+    sent = {(m.chat_id, "ch-77" in m.text) for m in session.named("SendMessage")}
+    assert (1000, True) in sent  # админ получил charge_id
+    assert any(chat == 7 for chat, _ in sent)  # клиент получил ответ
+    await db.connect()  # фикстура закроет базу ещё раз
+
+
+async def test_group_members_are_not_counted_as_users(tg, db):
+    bot, _ = tg
+    for uid in (1, 2, 3):
+        await feed(bot, message_update("привет", uid=uid, chat_type="supergroup"), db)
+    assert (await db.stats())["users"] == 0
+
+
+async def test_fallback_menu_knows_about_subscription(tg, db):
+    """Подписчику на непонятное сообщение показывалось «Купить подписку»."""
+    bot, session = tg
+    await db.grant(42, "pro", 30)
+    await feed(bot, message_update("что-то непонятное"), db)
+    (reply,) = session.named("SendMessage")
+    labels = [b.text for row in reply.reply_markup.inline_keyboard for b in row]
+    assert "Купить подписку" not in labels
+
+
+async def test_service_message_gets_no_reply(tg, db):
+    """Служебное сообщение (клиент включил автоудаление) — не вопрос к боту."""
+    bot, session = tg
+    timer = MessageAutoDeleteTimerChanged(message_auto_delete_time=86400)
+    await feed(bot, message_update(message_auto_delete_timer_changed=timer), db)
+    assert session.named("SendMessage") == []
+
+
+async def test_button_is_answered_when_telegram_fails(tg, db):
+    """Сбой Telegram при редактировании сообщения оставлял кнопку крутиться."""
+    bot, session = tg
+
+    def flood(method) -> None:
+        if type(method).__name__ == "EditMessageText":
+            raise TelegramRetryAfter(method=method, message="flood", retry_after=5)
+
+    session.hooks.append(flood)
+    with pytest.raises(TelegramRetryAfter):
+        await feed(bot, callback_update(Menu(section="faq").pack()), db)
+    assert len(session.named("AnswerCallbackQuery")) == 1
+
+
+async def test_forged_rotate_without_subscription_does_nothing(tg, db):
+    """Поддельная кнопка перевыпуска без подписки создавала ключ и писала
+    «Ключ перевыпущен», хотя доступа нет."""
+    bot, session = tg
+    await feed(bot, callback_update(RotateKey(confirm=1).pack()), db, settings(**GATEWAY))
+    assert await db.get_client_key(42) is None
+    (answer,) = session.named("AnswerCallbackQuery")
+    assert "активной подписке" in answer.text
+
+
+async def test_paid_crypto_check_shows_key(tg):
+    """«Проверить оплату» для оплаченного счёта говорила «ключ уже в чате», даже если
+    сообщение с ключом не дошло. Теперь показывает профиль с ключом."""
+    bot, session = tg
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    st = settings(**GATEWAY)
+    await db.add_keys("pro", ["up-1"])
+    order = await db.create_crypto_order(42, "pro")
+    await db.set_crypto_invoice(order.id, 1, "https://t.me/pay", utcnow())
+    await db.approve_crypto_order(order.id, 30)
+    crypto = CryptoPayments(None, db, bot, st)
+    await feed(bot, callback_update(CryptoCheck(order_id=order.id).pack()), db, st, crypto)
+    (edit,) = session.named("EditMessageText")
+    assert await db.get_client_key(42) in edit.text
+    await db.close()
+
+
+def reply_update(reply_to_id: int, uid: int = 1000, **extra) -> Update:
+    """Админ отвечает реплаем на сообщение бота с id reply_to_id."""
+    replied = Message(
+        message_id=reply_to_id,
+        date=datetime.now(),
+        chat=Chat(id=uid, type="private"),
+        from_user=BOT_USER,
+        text="обращение",
+    )
+    return message_update(uid=uid, reply_to_message=replied, **extra)
+
+
+def sent_to(session: FakeSession, chat_id: int) -> list:
+    return [
+        m
+        for m in session.calls
+        if type(m).__name__ in ("SendMessage", "CopyMessage") and m.chat_id == chat_id
+    ]
+
+
+async def ask_support(bot, session, db, text="Не пришёл ключ после оплаты"):
+    """Клиент 42 нажимает «Написать в поддержку» и отправляет вопрос."""
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update(text), db)
+    card, copy = sent_to(session, 1000)
+    return card, copy
+
+
+async def test_support_question_reaches_admin_and_answer_reaches_client(tg, db):
+    """Раньше поддержки не было вовсе: без SUPPORT_USERNAME бот писал «контакт скоро
+    появится». Теперь вопрос приходит админу, а ответ реплаем — клиенту."""
+    bot, session = tg
+    await db.grant(42, "pro", 30)
+    card, copy = await ask_support(bot, session, db)
+    assert "Обращение в поддержку" in card.text and "<code>42</code>" in card.text
+    assert copy.from_chat_id == 42  # само сообщение клиента скопировано админу
+    assert "отправлено в поддержку" in sent_to(session, 42)[-1].text
+
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    await feed(bot, reply_update(card_id, text="Ключ выдан, проверьте профиль"), db)
+    (answer,) = sent_to(session, 42)
+    assert "Ответ поддержки" in answer.text and "проверьте профиль" in answer.text
+    labels = [b.text for row in answer.reply_markup.inline_keyboard for b in row]
+    assert "Ответить" in labels
+    assert "отправлен клиенту" in sent_to(session, 1000)[-1].text
+
+
+async def test_admin_photo_answer_is_copied(tg, db):
+    bot, session = tg
+    await ask_support(bot, session, db)
+    session.calls.clear()
+    copy_id = (await db._all("SELECT message_id FROM support_messages ORDER BY message_id"))[-1]
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    await feed(bot, reply_update(copy_id["message_id"], photo=photo, caption="вот так"), db)
+    # одно сообщение: заголовок ответа в подписи к фото
+    (copied,) = sent_to(session, 42)
+    assert type(copied).__name__ == "CopyMessage" and copied.from_chat_id == 1000
+    assert copied.caption == "Ответ поддержки\n\nвот так"
+
+
+async def test_admin_reply_to_other_message_is_not_forwarded(tg, db):
+    bot, session = tg
+    await feed(bot, reply_update(999_999, text="просто реплай"), db)
+    assert sent_to(session, 42) == []
+
+
+async def test_cancelled_support_does_not_forward_next_message(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, callback_update(SupportWrite(cancel=True).pack()), db)
+    await feed(bot, message_update("привет"), db)
+    assert sent_to(session, 1000) == []
+
+
+async def test_start_cancels_support(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("/start"), db)
+    await feed(bot, message_update("привет"), db)
+    assert sent_to(session, 1000) == []
+
+
+async def test_unknown_command_is_not_sent_to_support(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("/whatever"), db)
+    assert sent_to(session, 1000) == []
+
+
+async def test_support_without_admins_says_unavailable(tg, db):
+    bot, session = tg
+    await feed(
+        bot, callback_update(SupportWrite().pack()), db, Settings(_env_file=None, bot_token="1:x")
+    )
+    (answer,) = session.named("AnswerCallbackQuery")
+    assert "недоступна" in answer.text
+
+
+async def test_site_section_links_to_site_and_docs(tg, db):
+    """В боте не было ничего о сайте."""
+    bot, session = tg
+    await feed(bot, callback_update(Menu(section="site").pack()), db)
+    (edit,) = session.named("EditMessageText")
+    assert "unknown-shop.netlify.app" in edit.text
+    urls = [b.url for row in edit.reply_markup.inline_keyboard for b in row if b.url]
+    assert urls == ["https://unknown-shop.netlify.app", "https://unknown-shop.netlify.app/api.html"]
+
+
+async def test_grant_of_other_tariff_needs_force(tg, db):
+    """/grant 42 pro 3 клиенту с оплаченным Unlimited молча сжигал ему остаток дней."""
+    bot, session = tg
+    await db.upsert_user(42, None, "Neo")
+    await db.grant(42, "unlimited", 60)
+    before = (await db.get_subscription(42)).expires_at
+    await feed(bot, message_update("/grant 42 pro 3", uid=1000), db)
+    (warning,) = sent_to(session, 1000)
+    assert "сожжёт остаток" in warning.text and "force" in warning.text
+    sub = await db.get_subscription(42)
+    assert sub.tariff == "unlimited" and sub.expires_at == before
+
+    session.calls.clear()
+    await feed(bot, message_update("/grant 42 pro 3 force", uid=1000), db)
+    assert (await db.get_subscription(42)).tariff == "pro"
+
+
+async def test_grant_warns_about_unknown_user(tg, db):
+    """Опечатка в ID: раньше подписка и ключ из пула уходили несуществующему клиенту,
+    а предупреждение приходило уже после. Теперь без force ничего не начисляется."""
+    bot, session = tg
+    await db.add_keys("pro", ["up-1"])
+    await feed(bot, message_update("/grant 555 pro", uid=1000), db)
+    assert "нет в базе" in sent_to(session, 1000)[-1].text
+    assert await db.get_subscription(555) is None
+    assert (await db.key_stats())["pro"]["free"] == 1
+
+    await feed(bot, message_update("/grant 555 pro 30 force", uid=1000), db)
+    assert (await db.get_subscription(555)).tariff == "pro"
+
+
+async def test_button_under_payment_receipt_keeps_receipt(tg, db):
+    """«Как подключить» под сообщением «Оплата прошла!» заменяло собой квитанцию с ключом."""
+    bot, session = tg
+    receipt = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=42, type="private"),
+        from_user=BOT_USER,
+        text="🎉 Оплата прошла!\nТариф Pro активен до ...",
+    )
+    query = CallbackQuery(
+        id="q",
+        from_user=user(42),
+        chat_instance="ci",
+        data=Menu(section="api").pack(),
+        message=receipt,
+    )
+    await feed(bot, Update(update_id=next(_ids), callback_query=query), db)
+    assert session.named("EditMessageText") == []
+    assert "Подключение" in session.named("SendMessage")[0].text
+
+
+async def test_expired_subscription_is_not_called_absent(tg, db):
+    bot, session = tg
+    await db.grant(42, "pro", 1)
+    await db.conn.execute("UPDATE subscriptions SET expires_at='2026-01-01T00:00:00+00:00'")
+    await db.conn.commit()
+    await feed(bot, message_update("/start"), db)
+    assert "Подписка закончилась" in session.named("SendMessage")[0].text
+
+
+async def test_legacy_tariff_is_not_offered_renewal(tg, db):
+    """Клиенту снятого с продажи тарифа предлагали «продлить заранее» — и он терял дни."""
+    bot, session = tg
+    await db.grant(42, "start", 30)
+    await feed(bot, message_update("/start"), db)
+    labels = [
+        b.text for row in session.named("SendMessage")[0].reply_markup.inline_keyboard for b in row
+    ]
+    assert "Сменить тариф" in labels and "Продлить подписку" not in labels
+
+
+async def test_stars_invoice_failure_answers_button(tg, db):
+    bot, session = tg
+
+    def reject(method) -> None:
+        if type(method).__name__ == "SendInvoice":
+            raise TelegramBadRequest(method=method, message="Bad Request: CURRENCY_INVALID")
+
+    session.hooks.append(reject)
+    await feed(bot, callback_update(BuyTariff(code="pro").pack()), db)
+    (answer,) = session.named("AnswerCallbackQuery")
+    assert "Не получилось выставить счёт" in answer.text
+
+
+async def test_expired_crypto_invoice_offers_new_invoice(tg):
+    bot, session = tg
+    database = Database(":memory:")
+    await database.connect()
+    order = await database.create_crypto_order(42, "pro")
+    await database.set_crypto_invoice(order.id, 1, "https://t.me/pay", utcnow())
+    await database.expire_crypto_order(order.id)
+    crypto = CryptoPayments(None, database, bot, settings())
+    await feed(bot, callback_update(CryptoCheck(order_id=order.id).pack()), database, None, crypto)
+    (edit,) = session.named("EditMessageText")
+    labels = [b.text for row in edit.reply_markup.inline_keyboard for b in row]
+    assert labels[0] == "Новый счёт" and "Продлить" not in labels
+    await database.close()
+
+
+def admin_copies(session: FakeSession) -> list:
+    return [m for m in sent_to(session, 1000) if type(m).__name__ == "CopyMessage"]
+
+
+async def test_album_and_follow_up_reach_support_as_one_ticket(tg, db):
+    """Альбом из трёх скриншотов и дописка следом: раньше доходило только первое сообщение,
+    остальное получало «Не понял запрос»."""
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    for _ in range(3):
+        await feed(bot, message_update(photo=photo, media_group_id="album-1"), db)
+    await feed(bot, message_update("и ещё: ключ не работает"), db)
+    cards = [m for m in sent_to(session, 1000) if type(m).__name__ == "SendMessage"]
+    assert len(cards) == 1  # одна карточка на обращение
+    assert len(admin_copies(session)) == 4
+    replies = [m.text for m in sent_to(session, 42)][1:]  # [0] — приглашение написать
+    assert len(replies) == 1 and "отправлено в поддержку" in replies[0]
+
+
+async def test_leaving_to_menu_closes_ticket(tg, db):
+    """Клиент открыл поддержку, ушёл в тарифы и написал «спасибо» — это не должно уйти
+    админам."""
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, callback_update(Menu(section="tariffs").pack()), db)
+    await feed(bot, message_update("спасибо, всё работает"), db)
+    assert admin_copies(session) == []
+
+
+async def test_path_like_text_is_a_question_not_a_command(tg, db):
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("/v1/chat/completions отдаёт 404"), db)
+    assert len(admin_copies(session)) == 1
+
+
+async def test_admin_answer_starting_with_command_reaches_client(tg, db):
+    """«/profile — там ваш ключ» реплаем на обращение раньше открывало профиль админа."""
+    bot, session = tg
+    card, _ = await ask_support(bot, session, db)
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    await feed(bot, reply_update(card_id, text="/profile — там ваш ключ"), db)
+    (answer,) = sent_to(session, 42)
+    assert answer.text == "Ответ поддержки\n\n/profile — там ваш ключ"
+
+
+async def test_long_admin_answer_is_split(tg, db):
+    """4090 символов + заголовок не влезали в лимит Telegram 4096."""
+    bot, session = tg
+    await ask_support(bot, session, db)
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    await feed(bot, reply_update(card_id, text="я" * 4090), db)
+    header, copied = sent_to(session, 42)
+    assert "Ответ поддержки" in header.text
+    assert type(copied).__name__ == "CopyMessage"
+
+
+async def test_admin_answer_keeps_links(tg, db):
+    bot, session = tg
+    await ask_support(bot, session, db)
+    session.calls.clear()
+    card_id = (await db._one("SELECT message_id FROM support_messages LIMIT 1"))["message_id"]
+    link = MessageEntity(type="text_link", offset=0, length=10, url="https://x.test/api.html")
+    await feed(bot, reply_update(card_id, text="Инструкция здесь", entities=[link]), db)
+    (answer,) = sent_to(session, 42)
+    moved = next(e for e in answer.entities if e.type == "text_link")
+    assert moved.offset == len("Ответ поддержки\n\n") and moved.url == "https://x.test/api.html"
+
+
+async def test_support_flood_is_limited(tg, db, monkeypatch):
+    import bot.handlers.support as support
+
+    monkeypatch.setattr(support, "MAX_MESSAGES_PER_HOUR", 3)
+    support._recent.clear()
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    for i in range(6):
+        await feed(bot, message_update(f"сообщение {i}"), db)
+    assert len(admin_copies(session)) == 3
+    flood = [m for m in sent_to(session, 42) if "слишком много" in m.text]
+    assert len(flood) == 1
+    support._recent.clear()
+
+
+async def test_client_reply_to_answer_continues_ticket(tg, db):
+    """Клиент ответил реплаем на «Ответ поддержки» — раньше получал «Не понял запрос»."""
+    bot, session = tg
+    answer = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=42, type="private"),
+        from_user=BOT_USER,
+        text="Ответ поддержки\n\nПроверьте ключ",
+    )
+    await feed(bot, message_update("всё равно 401", reply_to_message=answer), db)
+    assert len(admin_copies(session)) == 1
+
+
+async def open_ticket(bot, db, uid: int, text: str) -> None:
+    await feed(bot, callback_update(SupportWrite().pack(), uid=uid), db)
+    await feed(bot, message_update(text, uid=uid), db)
+
+
+def press_answer(user_id: int, cancel: bool = False) -> Update:
+    """Админ жмёт «Ответить» (или «Отмена») для клиента user_id."""
+    return callback_update(SupportAnswer(user_id=user_id, cancel=cancel).pack(), uid=1000)
+
+
+def texts_to(session: FakeSession, chat_id: int) -> list[str]:
+    return [getattr(m, "text", None) or m.caption or "" for m in sent_to(session, chat_id)]
+
+
+async def test_answer_button_reaches_only_that_client(tg, db):
+    """Писали двое клиентов. Ответ админа уходил «на удачу»: у админа не было ни кнопки
+    «Ответить», ни имени получателя, а голый текст без реплая никуда не адресован. Теперь
+    «Ответить» под обращением — и следующее сообщение получает только этот клиент."""
+    bot, session = tg
+    await open_ticket(bot, db, 42, "не работает ключ")
+    await open_ticket(bot, db, 43, "вопрос по оплате")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    prompt = texts_to(session, 1000)[-1]
+    assert "Ответ клиенту" in prompt and "<code>42</code>" in prompt
+    await feed(bot, message_update("ключ перевыпущен", uid=1000), db)
+    assert texts_to(session, 42) == ["Ответ поддержки\n\nключ перевыпущен"]
+    assert sent_to(session, 43) == []
+    confirmation = texts_to(session, 1000)[-1]
+    assert "отправлен клиенту" in confirmation and "<code>42</code>" in confirmation
+
+    # режим закрыт: следующий текст админа никому не уходит, и админ это видит
+    await feed(bot, message_update("а это для второго", uid=1000), db)
+    assert len(sent_to(session, 42)) == 1 and sent_to(session, 43) == []
+    assert "никуда не отправлено" in texts_to(session, 1000)[-1]
+
+
+async def test_ticket_messages_name_the_client_on_button(tg, db):
+    """Дописки разных клиентов приходят вперемешку: под каждой копией видно, от кого она."""
+    bot, session = tg
+    await open_ticket(bot, db, 42, "первое")
+    await feed(bot, message_update("дописка", uid=42), db)
+    # карточка советовала ответить «на это или следующее сообщение», а следующим при двух
+    # клиентах оказывалась карточка другого — ответ уходил ему
+    assert "следующее" not in sent_to(session, 1000)[0].text
+    for m in sent_to(session, 1000)[:3]:  # карточка и две копии
+        (button,) = [b for row in m.reply_markup.inline_keyboard for b in row]
+        assert "Neo · 42" in button.text
+        assert SupportAnswer.unpack(button.callback_data).user_id == 42
+
+
+async def test_answer_album_goes_to_one_client(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "скриншоты не грузятся")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    for i in range(3):
+        caption = "вот так" if i == 0 else None
+        await feed(
+            bot, message_update(uid=1000, photo=photo, media_group_id="a1", caption=caption), db
+        )
+    copies = sent_to(session, 42)
+    assert len(copies) == 3 and copies[0].caption == "Ответ поддержки\n\nвот так"
+    assert sum("отправлен клиенту" in t for t in texts_to(session, 1000)) == 1
+    await feed(bot, message_update("и ещё", uid=1000), db)  # после альбома режим закрыт
+    assert len(sent_to(session, 42)) == 3
+
+
+async def test_latest_answer_button_wins(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "раз")
+    await open_ticket(bot, db, 43, "два")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    await feed(bot, press_answer(43), db)
+    await feed(bot, message_update("ответ второму", uid=1000), db)
+    assert sent_to(session, 42) == [] and len(sent_to(session, 43)) == 1
+
+
+async def test_command_or_cancel_leaves_answer_mode(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "вопрос")
+    session.calls.clear()
+    await feed(bot, press_answer(42), db)
+    await feed(bot, message_update("/stats", uid=1000), db)
+    await feed(bot, message_update("набрал не туда", uid=1000), db)
+    await feed(bot, press_answer(42), db)
+    await feed(bot, press_answer(42, cancel=True), db)
+    await feed(bot, message_update("и это не туда", uid=1000), db)
+    assert sent_to(session, 42) == []
+
+
+async def test_forged_answer_button_from_client_does_nothing(tg, db):
+    """Клиент подделал кнопку «Ответить» другому клиенту: его текст не должен уйти тому."""
+    bot, session = tg
+    await feed(bot, callback_update(SupportAnswer(user_id=43).pack(), uid=42), db)
+    await feed(bot, message_update("привет от 42", uid=42), db)
+    assert sent_to(session, 43) == []
+
+
+async def test_reply_answer_names_the_client(tg, db):
+    bot, session = tg
+    await open_ticket(bot, db, 42, "вопрос")
+    await open_ticket(bot, db, 43, "другой вопрос")
+    rows = await db._all("SELECT message_id, user_id FROM support_messages ORDER BY message_id")
+    copy43 = [r["message_id"] for r in rows if r["user_id"] == 43][-1]
+    await feed(bot, press_answer(42), db)  # реплай важнее нажатой раньше кнопки
+    session.calls.clear()
+    await feed(bot, reply_update(copy43, text="ответ"), db)
+    assert sent_to(session, 42) == [] and len(sent_to(session, 43)) == 1
+    assert "<code>43</code>" in texts_to(session, 1000)[-1]
+    await feed(bot, message_update("ещё текст", uid=1000), db)
+    assert sent_to(session, 42) == []
+
+
+async def test_lost_ticket_card_is_sent_again(tg, db):
+    """Карточка не дошла (сбой Telegram), а копия дошла: обращение навсегда оставалось без
+    имени и подписки клиента — карточка больше не отправлялась."""
+    bot, session = tg
+    failed = []
+
+    def drop_first_card(method) -> None:
+        text = getattr(method, "text", None) or ""
+        if type(method).__name__ == "SendMessage" and "Обращение" in text and not failed:
+            failed.append(method)
+            raise TelegramBadRequest(method=method, message="Bad Request: sudden failure")
+
+    session.hooks.append(drop_first_card)
+    await open_ticket(bot, db, 42, "первое")
+    await feed(bot, message_update("второе", uid=42), db)
+    cards = [t for t in texts_to(session, 1000) if "Обращение в поддержку" in t]
+    assert failed and len(cards) == 1
+    assert sum("отправлено в поддержку" in t for t in texts_to(session, 42)) == 1
+
+
+async def test_album_of_ten_reaches_support_whole(tg, db, monkeypatch):
+    """«Написать в поддержку» и альбом из 10 скриншотов — 11 апдейтов: лимит частоты
+    отбрасывал последний снимок. Альбом считается одним событием."""
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    photo = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
+    for _ in range(10):
+        await feed(bot, message_update(photo=photo, media_group_id="album-10"), db)
+    assert len(admin_copies(session)) == 10
+
+
+async def test_admin_is_not_throttled(tg, db, monkeypatch):
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    for _ in range(BURST + 5):
+        await feed(bot, message_update("/keys", uid=1000), db)
+    assert len(sent_to(session, 1000)) == BURST + 5
+
+
+async def test_stars_invoice_cannot_be_paid_from_forwarded_copy(tg, db):
+    """Без start_parameter пересланную копию счёта можно оплатить в любом чате, а оплату
+    вне лички бот не обрабатывает: Stars списаны, подписки нет."""
+    bot, session = tg
+    await feed(bot, callback_update(BuyTariff(code="pro").pack()), db)
+    (invoice,) = session.named("SendInvoice")
+    assert invoice.start_parameter == "buy_pro"
+
+
+async def test_grant_names_the_client(tg, db):
+    bot, session = tg
+    await db.upsert_user(42, "neo", "Neo Anderson")
+    await feed(bot, message_update("/grant 42 pro", uid=1000), db)
+    text = texts_to(session, 1000)[-1]
+    assert "Neo Anderson (@neo) · <code>42</code>" in text
+
+
+async def test_message_via_other_bot_is_not_sent_to_support(tg, db):
+    """Сообщение «via @бот» несёт кнопки-ссылки того бота: в копии у админа они выглядели
+    бы кнопками нашего бота («Подтвердить оплату» на фишинговый сайт)."""
+    bot, session = tg
+    links_bot = User(id=777, is_bot=True, first_name="links", username="linksbot")
+    answer = Message(
+        message_id=next(_ids),
+        date=datetime.now(),
+        chat=Chat(id=42, type="private"),
+        from_user=BOT_USER,
+        text="Ответ поддержки\n\nПроверьте ключ",
+    )
+    await feed(bot, message_update("ответ", reply_to_message=answer, via_bot=links_bot), db)
+    await feed(bot, callback_update(SupportWrite().pack()), db)
+    await feed(bot, message_update("Подтвердите оплату", via_bot=links_bot), db)
+    assert admin_copies(session) == []
+
+
+async def test_payment_with_wrong_amount_is_not_credited(tg, db):
+    """Вторая линия после pre_checkout: оплата не той суммы или не в Stars начисляла
+    подписку как полная."""
+    bot, session = tg
+    price = TARIFFS["pro"].stars(settings().stars_per_usd)
+    for currency, amount, charge in (("XTR", price - 1, "ch-low"), ("USD", price, "ch-usd")):
+        payment = SuccessfulPayment(
+            currency=currency,
+            total_amount=amount,
+            invoice_payload="tariff:pro",
+            telegram_payment_charge_id=charge,
+            provider_payment_charge_id="",
+        )
+        await feed(bot, message_update(successful_payment=payment), db)
+        assert await db.get_subscription(42) is None
+        notices = [m.text for m in sent_to(session, 1000)]
+        assert any(charge in t and "не начислена" in t for t in notices)
+    assert "сумма не совпала" in sent_to(session, 42)[-1].text
+
+
+async def test_stats_do_not_count_admin_subscriptions(tg, db):
+    bot, session = tg
+    await db.upsert_user(1000, None, "Admin")
+    await db.grant(1000, "pro", 30)
+    await feed(bot, message_update("/stats", uid=1000), db)
+    text = sent_to(session, 1000)[-1].text
+    assert "Пользователей: 0" in text and "Активные подписки: 0" in text
+
+
+async def test_user_card_masks_keys(tg):
+    """/user показывал ключ провайдера и ключ клиента целиком, а карточку смотрят при разборе
+    обращений, скриншотят и пересылают. Полные ключи на отключение — в /revoke_list."""
+    bot, session = tg
+    db = Database(":memory:", hide_keys=True)
+    await db.connect()
+    try:
+        await db.add_keys("pro", ["up-provider-0123456789"])
+        await db.grant(42, "pro", 30)
+        client_key = await db.get_or_create_client_key(42)
+        await feed(bot, message_update("/user 42", uid=1000), db, settings(**GATEWAY))
+    finally:
+        await db.close()
+    text = sent_to(session, 1000)[-1].text
+    assert "up-provider-0123456789" not in text and client_key not in text
+    assert "…456789" in text and "…" + client_key[-6:] in text
+
+
+async def test_old_refund_link_answers_clearly(tg, db):
+    bot, session = tg
+    await feed(bot, message_update("/refund crypto:5", uid=1000), db)
+    assert "Возвраты отключены" in sent_to(session, 1000)[-1].text
+
+
+async def test_fallback_menu_for_legacy_tariff(tg, db):
+    bot, session = tg
+    await db.grant(42, "start", 30)
+    await feed(bot, message_update("что-то"), db)
+    labels = [b.text for row in sent_to(session, 42)[-1].reply_markup.inline_keyboard for b in row]
+    assert "Сменить тариф" in labels
+
+
+def freeze_clock(monkeypatch) -> None:
+    """Время для лимита частоты стоит: сколько апдейтов пройдёт, не зависит от скорости машины."""
+    monkeypatch.setattr(ratelimit, "time", SimpleNamespace(monotonic=lambda: 1000.0))
+
+
+async def test_button_flood_is_throttled(tg, db, monkeypatch):
+    """Скрипт жал кнопку без остановки, и каждое нажатие шло в обработчик: база, Crypto Pay
+    и Telegram API работали на флудера за счёт остальных клиентов."""
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    for _ in range(BURST + 5):
+        await feed(bot, callback_update(Menu(section="faq").pack()), db)
+    assert len(session.named("EditMessageText")) == BURST
+    # на лишние нажатия бот ничего не делает, но «часики» на кнопке гасит
+    assert len(session.named("AnswerCallbackQuery")) == BURST + 5
+
+
+async def test_payment_is_not_throttled(tg, db, monkeypatch):
+    """Оплата приходит одним апдейтом, второй раз Telegram её не пришлёт: лимит частоты
+    не должен её отбросить, даже если клиент только что исчерпал его сообщениями."""
+    freeze_clock(monkeypatch)
+    bot, session = tg
+    for _ in range(BURST + 1):
+        await feed(bot, message_update("привет"), db)
+    assert len(sent_to(session, 42)) == BURST  # последнее сообщение отброшено
+    payment = SuccessfulPayment(
+        currency="XTR",
+        total_amount=TARIFFS["pro"].stars(settings().stars_per_usd),
+        invoice_payload="tariff:pro",
+        telegram_payment_charge_id="ch-flood",
+        provider_payment_charge_id="",
+    )
+    await feed(bot, message_update(successful_payment=payment), db)
+    assert (await db.get_subscription(42)).tariff == "pro"
+    assert any("ch-flood" in m.text for m in sent_to(session, 1000))

@@ -13,7 +13,7 @@ from bot.keyboards.inline import (
 def test_main_menu_sections():
     buttons = [b for row in main_menu().inline_keyboard for b in row]
     sections = {Menu.unpack(b.callback_data).section for b in buttons}
-    assert sections == {"tariffs", "models", "profile", "api", "faq", "support"}
+    assert sections == {"tariffs", "models", "profile", "api", "faq", "site", "support"}
 
 
 def test_tariffs_keyboard_shows_only_tariffs_on_sale():

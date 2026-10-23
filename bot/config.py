@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     remind_days_before: int = 3
 
     api_base_url: str = "https://useitai.top/api/v1"
-    # Публичная ссылка на docs/index.html. Пусто — ссылка в боте не показывается
+    # Сайт магазина (docs/dist на Netlify): раздел «Сайт» в боте
+    site_url: str = "https://unknown-shop.netlify.app"
+    # Документация API. Пусто — страница API на сайте
     docs_url: str = ""
 
     # Crypto Pay API (@CryptoBot → Crypto Pay → My Apps). Пусто — оплата криптой выключена
@@ -34,6 +36,9 @@ class Settings(BaseSettings):
     public_api_url: str = ""
     gateway_host: str = "127.0.0.1"
     gateway_port: int = 8081
+    # Без эндпоинта бот запускается, только если это включено явно: иначе строка PUBLIC_API_URL,
+    # потерянная при правке .env, раздала бы клиентам ключи провайдера
+    allow_direct_keys: bool = False
 
     # Сайт: запускается вместе с ботом
     web_enabled: bool = False
@@ -52,7 +57,22 @@ class Settings(BaseSettings):
     @field_validator("support_username")
     @classmethod
     def strip_at(cls, value: str) -> str:
-        return value.strip().lstrip("@")
+        # Часто вставляют ссылку целиком: кнопка тогда вела на https://t.me/https://t.me/...
+        value = value.strip().removeprefix("https://").removeprefix("http://")
+        value = value.removeprefix("t.me/").removeprefix("telegram.me/")
+        return value.strip("/").lstrip("@")
+
+    @field_validator("public_api_url", "api_base_url", "docs_url", "site_url")
+    @classmethod
+    def strip_spaces(cls, value: str) -> str:
+        # PUBLIC_API_URL из одних пробелов включал эндпоинт с пустым адресом
+        return value.strip()
+
+    @property
+    def docs_link(self) -> str:
+        if self.docs_url:
+            return self.docs_url
+        return f"{self.site_url.removesuffix('/')}/api.html" if self.site_url else ""
 
     @property
     def anthropic_base_url(self) -> str:
