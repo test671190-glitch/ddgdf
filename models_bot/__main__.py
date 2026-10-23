@@ -46,7 +46,7 @@ def main() -> None:
         target=announce_new_models, args=(api, store), name="announce", daemon=True
     ).start()
     try:
-        poll(api, Serial(Bot(api, store).handle), threading.Event())
+        poll(api, Serial(Bot(api, store, me["username"]).handle), threading.Event())
     finally:
         api.close()
         log.info("Бот остановлен")

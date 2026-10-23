@@ -19,6 +19,7 @@ from models_bot.catalog import (
     MODELS,
     NO_ROLE,
     OTHER_MODELS,
+    REF_BONUS,
     STYLES,
     TOOLS,
     TOP_MODELS,
@@ -30,7 +31,7 @@ _ids = itertools.count(1)
 
 # Все символы оформления. Ни у одного нет свойства Emoji в Unicode (emoji-data.txt),
 # поэтому Telegram не заменит их на цветные эмодзи
-DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈↻⇄−▍+◐▣◩✶◎✐≡⌘→←↓↳✓·•—«»…×–")
+DECOR = set("✻⌬✧⁂⛭⌂ⓘ✎✕☰↺▸■◈❖↻⇄−▍+◐▣◩✶◎✐≡⌘→←↓↳✓·•—«»…×–")
 OPUS = MODELS["claude-opus-5-5"]
 
 
@@ -52,6 +53,8 @@ class FakeApi:
             if params["message_id"] in self.messages:
                 self.messages[params["message_id"]] = params
             return {"message_id": params["message_id"]}
+        if method == "getMe":
+            return {"id": 1, "is_bot": True, "username": "test_bot"}
         return True
 
     def named(self, method: str) -> list[dict]:
@@ -169,6 +172,8 @@ def all_screens() -> list[tuple[str, dict | None]]:
         (ui.new_models_text(OTHER_MODELS), ui.new_models_keyboard(OTHER_MODELS)),
         (ui.balance_text(prefs, 100), ui.balance_keyboard()),
         (ui.paid(100_000, 100_000) + ui.PAY_SUPPORT, ui.buy_keyboard()),
+        (ui.invite_text(ui.ref_link("test_bot", 42), 3, 150_000), ui.invite_keyboard("x")),
+        (ui.referral_joined("Neo", 50_000, 50_000) + ui.referral_joined(None, 1, 1), None),
         (ui.cant_read(model, "voice"), ui.answer_keyboard(1)),
         (ui.HELP, ui.other_model_keyboard(1, model.id)),
         (ui.STALE_BUTTON + ui.ONLY_TEXT + ui.ROLE_ONLY_TEXT + ui.TITLE_ONLY_TEXT, None),
@@ -217,6 +222,7 @@ def test_menu_has_tools_models_chats_balance_and_settings():
         "☰ Мои чаты",
         "◈ Мой баланс",
         "⛭ Настройки",
+        "❖ Пригласить",
     ]
 
 
@@ -259,6 +265,7 @@ def test_back_leads_one_screen_up():
     assert back(ui.rename_keyboard(chat)) == "info:5"
     assert back(ui.delete_keyboard(chat)) == "info:5"
     assert back(ui.balance_keyboard()) == "nav:main"
+    assert back(ui.invite_keyboard("https://t.me/test_bot?start=ref_42")) == "nav:main"
 
 
 def test_other_models_are_gpt_6_sol_and_gemini_only():
@@ -1112,6 +1119,78 @@ def test_out_of_tokens_offers_to_top_up(bot, monkeypatch):
     last = bot.api.named("sendMessage")[-1]
     assert last["text"] == answers.limit_reached()
     assert data(last["reply_markup"]) == ["nav:balance"]
+
+
+# Приглашения
+
+
+def start_as(bot: Bot, uid: int, text: str, first_name: str = "Trinity") -> None:
+    user = {"id": uid, "is_bot": False, "first_name": first_name}
+    message = {
+        "message_id": next(_ids),
+        "date": 1,
+        "chat": {"id": uid, "type": "private"},
+        "from": user,
+        "text": text,
+    }
+    bot.handle({"update_id": next(_ids), "message": message})
+
+
+def test_invite_screen_shows_personal_link_and_stats(bot):
+    press(bot, "nav:invite")
+    shown = bot.api.last()
+    assert "https://t.me/test_bot?start=ref_42" in shown["text"]
+    assert "Приглашено — 0" in shown["text"]
+    share = buttons(shown["reply_markup"])[0]["url"]
+    assert share.startswith("https://t.me/share/url?url=https%3A%2F%2Ft.me%2Ftest_bot")
+    say(bot, "/invite")
+    assert "ref_42" in bot.api.sent()[-1]
+
+
+def test_new_user_by_link_gives_inviter_a_bonus_once(bot):
+    start_as(bot, 7, "/start ref_42")
+    assert bot.store.get(42).balance == REF_BONUS
+    assert bot.api.sent()[-1] == ui.referral_joined("Trinity", REF_BONUS, REF_BONUS)
+    welcome = [p for p in bot.api.named("sendMessage") if p["chat_id"] == 7]
+    assert "Привет, Trinity" in welcome[0]["text"]  # приглашённый получил обычное приветствие
+    start_as(bot, 7, "/start ref_42")  # тот же человек по ссылке ещё раз
+    start_as(bot, 8, "/start")  # без ссылки
+    assert bot.store.get(42).balance == REF_BONUS
+    assert bot.store.referrals(42) == (1, REF_BONUS)
+    press(bot, "nav:invite")
+    assert f"Получено бонусов — {answers.num(REF_BONUS)}" in bot.api.last()["text"]
+
+
+def test_referral_is_not_counted_for_self_old_users_or_unknown_inviters(bot):
+    say(bot, "/start ref_42")  # сам себя
+    start_as(bot, 9, "/start")
+    start_as(bot, 9, "/start ref_42")  # уже был в боте
+    start_as(bot, 10, "/start ref_999")  # такого пригласившего нет
+    start_as(bot, 11, "/start ref_abc")
+    assert bot.store.get(42).balance == 0
+    assert bot.store.referrals(42) == (0, 0)
+    assert bot.store.referrals(999) == (0, 0)
+
+
+def test_referral_bonus_is_credited_even_if_messages_fail(bot):
+    fake = bot.api
+
+    def api(method: str, _timeout: float = 0, **params):
+        if method == "sendMessage" and params["chat_id"] == 42:
+            raise tg.TelegramError(403, "Forbidden: bot was blocked by the user")
+        return fake(method, **params)
+
+    bot.api = api
+    start_as(bot, 12, "/start ref_42")  # пригласивший заблокировал бота
+    assert bot.store.get(42).balance == REF_BONUS and bot.store.get(42).blocked
+    start_as(bot, 13, "/start ref_42")  # ему больше не пишем, но бонус идёт
+    assert bot.store.get(42).balance == 2 * REF_BONUS
+    assert [p["chat_id"] for p in fake.named("sendMessage")] == [12, 13]
+    bot.api = fake
+    fake.fail["sendMessage"] = tg.TelegramError(500, "Internal Server Error")
+    with pytest.raises(tg.TelegramError):
+        start_as(bot, 14, "/start ref_42")  # приветствие не ушло, а бонус уже начислен
+    assert bot.store.referrals(42) == (3, 3 * REF_BONUS)
 
 
 # Уведомления о новых моделях

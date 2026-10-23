@@ -6,7 +6,8 @@
 Модель меняется прямо в чате: переписка сохраняется, дальше отвечает новая модель.
 «☰ Мои чаты» — список: нажатие переключает в чат, «✎ Изменить» — переименовать или удалить.
 
-Меню (⛭ Меню, /start → кнопки): Модели, Настройки, Мои чаты, Мой баланс.
+Меню (⛭ Меню, /start → кнопки): Инструменты, Модели, Мои чаты, Мой баланс, Настройки,
+«❖ Пригласить» — личная ссылка t.me/<бот>?start=ref_<id> и бонусы за приглашённых.
 
 Данные кнопок: nav:<экран>, card:<модель>:<откуда>, pick:<модель>:<откуда> (сменить модель
 чата), chat:<модель>[:<откуда>] (новый чат с моделью), tgl:<настройка>, role:<роль>,
@@ -19,10 +20,12 @@ newchat, buy:<пакет>, ans:<ответ>:<r|m|s|back>, ansm:<ответ>:<м�
 Оформление монохромное: только символы Unicode без эмодзи-представления, тонкие
 и одного веса. Знаки разработчиков — в catalog.VENDOR_MARKS, остальное здесь:
 ⁂ модели, ⛭ меню и настройки, ☰ чаты, + новый чат, ▸ открыть, ✎ изменить, ✕ удалить,
-◈ баланс, ↻ ⇄ − кнопки ответа, ⓘ уведомление, → ← ↓ ↳ переходы, ✓ выбранное, · разделитель.
+◈ баланс, ❖ приглашения, ↻ ⇄ − кнопки ответа, ⓘ уведомление, → ← ↓ ↳ переходы,
+✓ выбранное, · разделитель.
 """
 
 import time
+from urllib.parse import quote
 
 from models_bot.answers import TEST_DAILY_LIMIT, WARN_SHARE, escape, num, plural, shorten
 from models_bot.catalog import (
@@ -31,6 +34,8 @@ from models_bot.catalog import (
     MODELS,
     OTHER_MODELS,
     PACKS,
+    REF_BONUS,
+    REF_PREFIX,
     ROLE_MAX_LENGTH,
     STYLES,
     TOOLS,
@@ -52,6 +57,7 @@ KEYBOARD_BUTTONS = (NEW_CHAT, MY_CHATS, MODEL, MENU)  # клавиатура в�
 OLD_CHATS, OLD_NEW_DIALOG, OLD_END_CHAT = "☰ Чаты", "↺ Новый диалог", "■ Завершить чат"
 OLD_BUTTONS = (OLD_CHATS, OLD_NEW_DIALOG, OLD_END_CHAT)
 BALANCE = "◈ Мой баланс"
+INVITE = "❖ Пригласить"
 REGENERATE = "↻ Перегенерировать"
 OTHER_MODEL = "⇄ Другая модель"
 SHORTER = "− Короче"
@@ -70,6 +76,7 @@ COMMANDS = [
     {"command": "menu", "description": "⛭ Меню"},
     {"command": "settings", "description": "⛭ Настройки"},
     {"command": "balance", "description": "◈ Мой баланс и пополнение"},
+    {"command": "invite", "description": "❖ Пригласить друга: бонусные токены"},
     {"command": "help", "description": "ⓘ Помощь"},
     {"command": "paysupport", "description": "ⓘ Вопрос по оплате"},
 ]
@@ -426,7 +433,8 @@ HELP = (
     f"{MODEL} или /model — сменить модель в текущем чате\n"
     f"{MENU} или /menu — инструменты, модели, настройки, баланс\n"
     f"{TOOLS_TITLE} или /tools — идеи, объяснение, пересказ, картинки\n"
-    "/balance — баланс и пополнение</blockquote>"
+    "/balance — баланс и пополнение\n"
+    f"/invite — пригласить друга, +{num(REF_BONUS)} токенов за каждого</blockquote>"
 )
 
 
@@ -505,6 +513,37 @@ PAY_SUPPORT = (
     "Если Stars списались, а токены не пришли, или хотите вернуть оплату — опишите ситуацию "
     "владельцу бота и приложите чек из истории Stars в Telegram. Возврат приходит обратно в Stars."
 )
+
+
+def ref_link(bot_username: str, user_id: int) -> str:
+    return f"https://t.me/{bot_username}?start={REF_PREFIX}{user_id}"
+
+
+def invite_text(link: str, invited: int, earned: int) -> str:
+    return (
+        f"<b>{INVITE} друга</b>\n"
+        f"За каждого, кто впервые откроет бота по вашей ссылке, — +{num(REF_BONUS)} токенов "
+        "на баланс.\n\n"
+        f"<blockquote>Приглашено — {num(invited)}\n"
+        f"Получено бонусов — {num(earned)} токенов</blockquote>\n\n"
+        f"Ваша ссылка:\n<code>{escape(link)}</code>"
+    )
+
+
+def invite_share(link: str) -> str:
+    """Ссылка «поделиться»: Telegram предложит выбрать, кому отправить."""
+    note = f"{BRAND}: Claude, GPT и Gemini в одном боте"
+    return f"https://t.me/share/url?url={quote(link, safe='')}&text={quote(note, safe='')}"
+
+
+def referral_joined(first_name: str | None, tokens: int, balance: int) -> str:
+    who = f" — {escape(first_name)}" if first_name else ""
+    return (
+        f"{INVITE[0]} По вашей ссылке новый пользователь{who}: +{num(tokens)} токенов. "
+        f"На балансе — {num(balance)}."
+    )
+
+
 ROLE_ONLY_TEXT = "Пришлите инструкцию текстом или нажмите «← Отмена»."
 TITLE_ONLY_TEXT = "Пришлите название текстом или нажмите «← Отмена»."
 STALE_BUTTON = "Кнопка устарела, открываю меню"
@@ -519,7 +558,7 @@ def menu_keyboard() -> dict:
     return inline(
         [button(TOOLS_TITLE, "nav:tools"), button(MODELS_TITLE, "nav:models")],
         [button(MY_CHATS, "nav:chats"), button(BALANCE, "nav:balance")],
-        [button(SETTINGS, "nav:settings")],
+        [button(SETTINGS, "nav:settings"), button(INVITE, "nav:invite")],
     )
 
 
@@ -565,6 +604,13 @@ def balance_keyboard() -> dict:
 def buy_keyboard() -> dict:
     """Под сообщением «лимит исчерпан»."""
     return inline([button(f"{BALANCE} · пополнить", "nav:balance")])
+
+
+def invite_keyboard(link: str) -> dict:
+    return inline(
+        [{"text": "→ Поделиться ссылкой", "url": invite_share(link)}],
+        [button(TO_MENU, "nav:main")],
+    )
 
 
 def picker_keyboard(current: str) -> dict:

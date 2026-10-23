@@ -1,4 +1,5 @@
-"""Обработка апдейтов: сообщения и чат с моделью, кнопки, меню, настройки, оплата.
+"""Обработка апдейтов: сообщения и чат с моделью, кнопки, меню, настройки, оплата,
+приглашения по ссылке /start ref_<id>.
 
 Вы всегда в чате: сообщение уходит текущей модели, а если чата ещё нет, он создаётся
 сам. Клавиатура внизу — «+ Новый чат», «☰ Мои чаты», «⁂ Модель», «⛭ Меню».
@@ -16,6 +17,8 @@ from models_bot.catalog import (
     MODELS,
     NO_ROLE,
     PACKS,
+    REF_BONUS,
+    REF_PREFIX,
     ROLE_MAX_LENGTH,
     STYLES,
     TOOLS,
@@ -31,7 +34,7 @@ from models_bot.store import (
     Turn,
     next_value,
 )
-from models_bot.tg import Api, TelegramError
+from models_bot.tg import NETWORK_ERRORS, Api, TelegramError
 
 KEYBOARD_VERSION = 2  # клавиатура внизу; у кого старее — один раз пришлём новую
 
@@ -41,9 +44,10 @@ def _int(text: str) -> int:
 
 
 class Bot:
-    def __init__(self, api: Api, store: Store) -> None:
+    def __init__(self, api: Api, store: Store, username: str = "") -> None:
         self.api = api
         self.store = store
+        self.username = username  # имя бота без @: для ссылки-приглашения
 
     # Отправка
 
@@ -170,7 +174,9 @@ class Bot:
         if not user or message["chat"]["type"] != "private":
             return
         uid = user["id"]
+        inviter = self.inviter(uid, message.get("text"))  # до visitor: он запомнит uid
         prefs = self.visitor(uid)
+        bonus = self.store.add_referral(inviter, uid, REF_BONUS) if inviter else None
         if payment := message.get("successful_payment"):
             self.on_payment(uid, payment)
             return
@@ -201,6 +207,8 @@ class Bot:
             self.send(uid, ui.ONLY_TEXT)
         else:
             self.ask(uid, prefs, text or "", attachment)
+        if bonus is not None:  # после приветствия: сообщение пригласившему его не задержит
+            self.tell_inviter(inviter, user, bonus)
 
     def refresh_keyboard(self, uid: int, prefs: Prefs, command: str | None) -> Prefs:
         """После обновления бота у прежних пользователей на экране старая клавиатура:
@@ -247,6 +255,8 @@ class Bot:
             self.send(
                 uid, ui.balance_text(prefs, self.store.used_today(uid)), ui.balance_keyboard()
             )
+        elif command in ("invite", "ref"):
+            self.send(uid, *self.invite_screen(uid))
         elif command == "help":
             self.send(uid, ui.HELP)
         elif command == "paysupport":
@@ -361,6 +371,8 @@ class Bot:
             text, markup = ui.role_text(prefs), ui.role_keyboard(prefs)
         elif name == "tools":
             text, markup = ui.tools_text(model), ui.tools_keyboard()
+        elif name == "invite":
+            text, markup = self.invite_screen(uid)
         else:
             text, markup = ui.notify_text(), ui.notify_keyboard(prefs)
         self.show(query, text, markup)
@@ -706,6 +718,43 @@ class Bot:
                 chat.id, answers.plain_text(reply.html), reply.output_tokens
             )
 
+    # Приглашения
+
+    def invite_screen(self, uid: int) -> tuple[str, dict]:
+        if not self.username:
+            self.username = self.api("getMe")["username"]
+        link = ui.ref_link(self.username, uid)
+        return ui.invite_text(link, *self.store.referrals(uid)), ui.invite_keyboard(link)
+
+    def inviter(self, uid: int, text: str | None) -> int:
+        """Кто пригласил: /start ref_<id> от того, кого бот ещё не видел. 0 — не засчитано:
+        уже был в боте, пригласил сам себя или такого пригласившего нет."""
+        parts = (text or "").split()
+        if (
+            len(parts) != 2
+            or parts[0].split("@")[0].lower() != "/start"
+            or not parts[1].startswith(REF_PREFIX)
+        ):
+            return 0
+        inviter = _int(parts[1][len(REF_PREFIX) :])
+        if inviter == uid or not self.store.exists(inviter) or self.store.exists(uid):
+            return 0
+        return inviter
+
+    def tell_inviter(self, inviter: int, invitee: dict, balance: int) -> None:
+        """Бонус уже на балансе пригласившего: сообщить ему, если бот не заблокирован."""
+        log.info("Приглашение: %s пришёл по ссылке %s", invitee["id"], inviter)
+        if self.store.get(inviter).blocked:
+            return
+        try:
+            self.send(inviter, ui.referral_joined(invitee.get("first_name"), REF_BONUS, balance))
+        except TelegramError as e:
+            if e.code == 403:  # бота заблокировали: бонус начислен, сообщение не нужно
+                self.store.update(inviter, blocked=True)
+            log.info("Сообщение о приглашении не дошло до %s: %s", inviter, e)
+        except NETWORK_ERRORS as e:
+            log.info("Сообщение о приглашении не дошло до %s: %r", inviter, e)
+
     # Оплата Stars
 
     def pre_checkout(self, checkout: dict) -> None:
@@ -754,4 +803,5 @@ SCREENS = {
     "notify": "⛭ Уведомления",
     "balance": ui.BALANCE,
     "tools": ui.TOOLS_TITLE,
+    "invite": ui.INVITE,
 }

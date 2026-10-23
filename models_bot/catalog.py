@@ -161,3 +161,7 @@ Pack = namedtuple("Pack", "key tokens stars")
 PACKS = {
     p.key: p for p in [Pack("s", 100_000, 50), Pack("m", 500_000, 200), Pack("l", 2_000_000, 700)]
 }
+# Приглашения: ссылка t.me/<бот>?start=ref_<id>. За каждого нового пользователя по ней
+# пригласившему — REF_BONUS токенов на баланс: половина самого маленького пакета
+REF_PREFIX = "ref_"
+REF_BONUS = 50_000

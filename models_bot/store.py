@@ -107,6 +107,10 @@ class Store:
             # Оплаты Stars: charge_id нужен для возврата и чтобы не начислить дважды
             "CREATE TABLE IF NOT EXISTS payments (charge_id TEXT PRIMARY KEY, user_id INTEGER,"
             " pack TEXT, stars INTEGER, tokens INTEGER, created REAL);"
+            # Приглашения: у каждого приглашённого один пригласивший, бонус — один раз
+            "CREATE TABLE IF NOT EXISTS referrals (invitee INTEGER PRIMARY KEY,"
+            " inviter INTEGER, tokens INTEGER, created REAL);"
+            "CREATE INDEX IF NOT EXISTS referrals_inviter ON referrals (inviter);"
         )
         # Новая настройка — новый столбец. У прежних строк в нём NULL: это значение по умолчанию
         self._add_columns("prefs", FIELDS)
@@ -176,6 +180,12 @@ class Store:
             self.db.execute("INSERT OR IGNORE INTO prefs (user_id) VALUES (?)", (user_id,))
             self.db.commit()
             self.known.add(user_id)
+
+    def exists(self, user_id: int) -> bool:
+        """Бот уже видел этого пользователя."""
+        with self.lock:
+            row = self.db.execute("SELECT 1 FROM prefs WHERE user_id = ?", (user_id,)).fetchone()
+        return row is not None
 
     def get(self, user_id: int) -> Prefs:
         with self.lock:
@@ -423,6 +433,35 @@ class Store:
             )
             self.db.commit()
             return self.get(user_id).balance
+
+    # Приглашения
+
+    def add_referral(self, inviter: int, invitee: int, tokens: int) -> int | None:
+        """Начислить бонус за приглашённого. None — его уже кто-то пригласил.
+        Иначе — новый баланс пригласившего."""
+        with self.lock:
+            try:
+                self.db.execute(
+                    "INSERT INTO referrals (invitee, inviter, tokens, created) VALUES (?, ?, ?, ?)",
+                    (invitee, inviter, tokens, time.time()),
+                )
+            except sqlite3.IntegrityError:
+                return None
+            self.db.execute(
+                "UPDATE prefs SET balance = coalesce(balance, 0) + ? WHERE user_id = ?",
+                (tokens, inviter),
+            )
+            self.db.commit()
+            return self.get(inviter).balance
+
+    def referrals(self, inviter: int) -> tuple[int, int]:
+        """Сколько пользователей пригласил и сколько токенов получил за них."""
+        with self.lock:
+            count, tokens = self.db.execute(
+                "SELECT count(*), coalesce(sum(tokens), 0) FROM referrals WHERE inviter = ?",
+                (inviter,),
+            ).fetchone()
+        return count, tokens
 
     # Расход токенов за сутки (UTC)
 
