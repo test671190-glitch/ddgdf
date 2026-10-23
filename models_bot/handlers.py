@@ -263,9 +263,11 @@ class Bot:
             self.send(uid, ui.PAY_SUPPORT)
         elif command == "stop":
             self.send(uid, ui.NO_CLOSING, self.keyboard(uid, prefs))
-        else:  # /start и неизвестные команды
-            chat, model = self.current(uid, prefs)
-            self.send(uid, ui.welcome(user.get("first_name"), model, chat), ui.keyboard(model))
+        else:  # /start и неизвестные команды: сразу меню
+            # Клавиатуру внизу и меню с кнопками в одно сообщение не уложить: сначала строка
+            # с клавиатурой (её могли потерять, очистив чат), потом меню
+            self.send(uid, ui.welcome(user.get("first_name")), self.keyboard(uid, prefs))
+            self.send_menu(uid, prefs)
 
     def on_button(self, query: dict) -> None:
         message = query.get("message") or {}

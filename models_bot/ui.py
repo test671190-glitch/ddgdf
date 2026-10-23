@@ -179,24 +179,9 @@ def keyboard(model: Model) -> dict:
 # Тексты
 
 
-def welcome(first_name: str | None, model: Model, chat: Chat | None = None) -> str:
-    name = escape(first_name or "друг")
-    now = (
-        f"Сейчас открыт чат «{escape(chat_name(chat))}» — продолжайте или начните новый."
-        if chat and chat.messages
-        else "Чат начнётся с первого же сообщения."
-    )
-    return (
-        f"<b>{BRAND}</b> · нейросети в одном окне\n"
-        f"Привет, {name}.\n\n"
-        f"Просто напишите вопрос — ответит <b>{escape(model.label)}</b>.\n"
-        f"{now}\n\n"
-        f"<blockquote>{NEW_CHAT} — начать с чистого листа\n"
-        f"{MY_CHATS} — вернуться к прошлым разговорам\n"
-        f"{MODEL} — выбрать другую нейросеть\n"
-        f"{MENU} — все модели, настройки, баланс</blockquote>\n\n"
-        "<i>Тестовый режим: модели отвечают заготовками.</i>"
-    )
+def welcome(first_name: str | None) -> str:
+    """Строка перед меню на /start: с ней приходит клавиатура внизу, меню — следом."""
+    return f"Привет, {escape(first_name or 'друг')}. Пишите вопрос или выберите в меню ↓"
 
 
 def menu_text(model: Model, chat: Chat | None, prefs: Prefs) -> str:

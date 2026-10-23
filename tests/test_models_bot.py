@@ -142,8 +142,7 @@ def all_screens() -> list[tuple[str, dict | None]]:
     gone = Chat(3, 42, "grok-4.7", "Старый чат", 1, 0)
     model = MODELS[prefs.model]
     screens = [
-        (ui.welcome("Neo", model), ui.keyboard(model)),
-        (ui.welcome("Neo", model, chat), ui.menu_keyboard()),
+        (ui.welcome("Neo") + ui.welcome(None), ui.keyboard(model)),
         (ui.menu_text(model, chat, custom) + ui.menu_text(model, None, prefs), None),
         (ui.models_text(), ui.models_keyboard()),
         (ui.other_text(), ui.other_keyboard()),
@@ -455,7 +454,7 @@ def test_every_screen_and_card_opens(bot):
 @pytest.mark.parametrize(
     ("text", "first_button"),
     [
-        ("/start", "+ Новый чат"),  # приветствие — с клавиатурой внизу
+        ("/start", "⌘ Инструменты"),  # сразу меню
         ("/menu", "⌘ Инструменты"),
         ("/tools", "◐ Фотостили"),
         ("/model", "✻ Claude Opus 5.5  ✓"),
@@ -464,8 +463,8 @@ def test_every_screen_and_card_opens(bot):
         ("/chats", "+ Новый чат"),
         ("/settings", "Модель · Claude Opus 5.5"),
         ("/balance", "+ 100 000 токенов · 50 Stars"),
-        ("/start@modelsbot", "+ Новый чат"),
-        ("/unknown", "+ Новый чат"),
+        ("/start@modelsbot", "⌘ Инструменты"),
+        ("/unknown", "⌘ Инструменты"),
         (ui.MENU, "⌘ Инструменты"),
         (ui.MODEL, "✻ Claude Opus 5.5  ✓"),
         (ui.MY_CHATS, "+ Новый чат"),
@@ -644,12 +643,16 @@ def test_existing_users_get_the_new_keyboard_once(bot):
     assert bot.store.get(42).kb == KEYBOARD_VERSION
 
 
-def test_new_users_get_the_keyboard_with_welcome_only(tmp_path, monkeypatch):
+def test_start_sends_the_keyboard_then_the_menu(tmp_path, monkeypatch):
     monkeypatch.setattr(answers, "STREAM_DELAY", 0)
     fresh = Bot(FakeApi(), Store(tmp_path / "fresh.db"))
     say(fresh, "/start")
     assert ui.KEYBOARD_UPDATED not in fresh.api.sent()
-    assert fresh.api.final()["reply_markup"] == ui.keyboard(OPUS)
+    greeting, menu = fresh.api.named("sendMessage")
+    assert greeting["text"] == ui.welcome("Neo")
+    assert greeting["reply_markup"] == ui.keyboard(OPUS)
+    assert menu["reply_markup"] == ui.menu_keyboard()
+    assert "· меню" in menu["text"] and "Тестовый режим" not in menu["text"]
 
 
 def test_rename_chat(bot):
@@ -1185,7 +1188,7 @@ def test_referral_bonus_is_credited_even_if_messages_fail(bot):
     assert bot.store.get(42).balance == REF_BONUS and bot.store.get(42).blocked
     start_as(bot, 13, "/start ref_42")  # ему больше не пишем, но бонус идёт
     assert bot.store.get(42).balance == 2 * REF_BONUS
-    assert [p["chat_id"] for p in fake.named("sendMessage")] == [12, 13]
+    assert {p["chat_id"] for p in fake.named("sendMessage")} == {12, 13}
     bot.api = fake
     fake.fail["sendMessage"] = tg.TelegramError(500, "Internal Server Error")
     with pytest.raises(tg.TelegramError):
